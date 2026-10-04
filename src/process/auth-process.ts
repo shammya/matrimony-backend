@@ -104,6 +104,18 @@ export class AuthProcess {
     if (account.id !== session.accountId) throw new AppError(401, 'SESSION_INVALID');
     return { ...account, subject: identity.subject };
   }
+  /**
+   * Starts or restores a browser session from its cookie alone. The browser has no CSRF
+   * token right after login or after a reload, and the server never stores the login's
+   * own access token (only its hash), so this rotates the session through the provider
+   * exactly like refresh, using the CSRF token the session already holds. The caller
+   * must have checked the same-origin rule; the cookie is HttpOnly and host-only.
+   */
+  async bootstrap(agencyId: string, id: string, correlationId: string) {
+    const session = await this.sessions.get(digest(id));
+    if (!session || session.agencyId !== agencyId) throw new AppError(401, 'SESSION_INVALID');
+    return this.refresh(agencyId, id, session.csrf, correlationId);
+  }
   async refresh(agencyId: string, id: string, csrf: string, correlationId: string) {
     const key = digest(id);
     const claim = secret();

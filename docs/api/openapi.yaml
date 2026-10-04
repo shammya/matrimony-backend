@@ -1,0 +1,374 @@
+openapi: 3.1.0
+info:
+  title: Matrimony API
+  version: 0.1.0
+  description: |
+    The API contract and a plain-language record of what has been built.
+
+    **How to read this file.** Each feature has a section (a tag) that says what the
+    feature does, why it exists and its **Status**, followed by its endpoints. Status is
+    one of: **Implemented**, **In progress**, **Planned**.
+
+    **How to maintain it.** It is written by hand. Add or update a feature's entry in the
+    same change as its controller or response schema. Write the contract for a group of
+    endpoints before building them. The frontend generates its TypeScript types from this
+    file (`npm run api:types` in the frontend repo).
+
+    **Rules that apply everywhere.** Every route except `/health/*` resolves the agency
+    from the request `Host` header (an allowlisted hostname). `X-Forwarded-Host` is
+    ignored. Every response is `cache-control: no-store`. Errors use the envelope
+    `{ error: { code, requestId } }`.
+servers:
+  - url: /
+tags:
+  - name: Health
+    description: |
+      **Service health.** Lets monitoring and deploy tooling ask whether the process is
+      alive and whether PostgreSQL and Redis are reachable. No login and no agency needed.
+
+      **Status:** Implemented.
+  - name: Tenant
+    description: |
+      **Agency public configuration.** The site is multi-tenant: each agency has its own
+      hostname. This returns the agency's name, default language and public content
+      (branding, copy, branches, success stories) for the hostname in the request, so the
+      frontend can render the right agency before anyone logs in.
+
+      **Status:** Implemented. The inner shape of `content` is not defined yet (planned
+      for the homepage and theming work).
+  - name: Auth
+    description: |
+      **Login through an external identity provider (OIDC).** The backend stores no
+      passwords. The browser is sent to the provider (Auth0 in development), logs in
+      there, and comes back to the callback, which verifies the result, finds the
+      agency-local account and starts a session. The access token is meant to be kept in
+      frontend memory; the refresh token never reaches the browser.
+
+      **Status:** Implemented. After login the callback redirects to a frontend page
+      instead of showing tokens (see Session handoff).
+  - name: Session handoff
+    description: |
+      **Getting the browser signed in after the provider login.** Today the callback
+      shows the tokens as raw JSON, so the frontend app never receives them. This feature
+      replaces that with a normal redirect and one small endpoint.
+
+      How it will work:
+      1. The callback verifies the login and sets the session cookie as before, then
+         **redirects** the browser to a frontend page (`/{locale}/auth/complete`). No
+         tokens are placed in the URL or the page.
+      2. That page calls `POST /api/v1/auth/session`. The server uses the session's own
+         stored refresh token to obtain a fresh access token, and returns it with the
+         CSRF token. The access token is kept in frontend memory only.
+      3. The same call restores the session after a page reload or in a new tab, because
+         it needs only the session cookie, not a CSRF token the browser may have lost.
+
+      Why a new endpoint and not `/auth/refresh`: refresh needs the CSRF token, which the
+      browser does not have yet right after login. Why not return the login's own access
+      token: the server stores only a hash of it, never the token.
+
+      Safety: POST only, the `Origin` header must match the site, and the cookie is
+      HttpOnly and host-only, so another website cannot trigger it or read its response.
+      Needs review by an experienced backend or security reviewer before live release.
+
+      **Status:** Implemented. Backend covered by unit and HTTP tests; the frontend login,
+      completion and dashboard pages are built, and the login flow was checked in a browser.
+      Still to confirm: logout and session restore after a reload.
+  - name: Account
+    description: |
+      **Current account.** Returns who the signed-in user is inside this agency: id,
+      agency, role (`admin`, `agent` or `member`) and display name. The role is read from
+      the agency's own database on every request, never from the token.
+
+      **Status:** Implemented.
+
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Process liveness
+      description: Public. Does not need a known tenant.
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: PostgreSQL and Redis availability
+      description: Public. Does not need a known tenant.
+      responses:
+        "200":
+          description: Dependencies are reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ready }
+        "503":
+          description: A dependency is unavailable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: unavailable }
+
+  /api/v1/public/tenant:
+    get:
+      tags: [Tenant]
+      summary: Public configuration of the agency for this hostname
+      description: Public. Returns branding and copy only, never secrets.
+      responses:
+        "200":
+          description: The active agency for the request hostname.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "400": { $ref: "#/components/responses/Error400" }
+        "404": { $ref: "#/components/responses/TenantNotFound" }
+
+  /api/v1/auth/authorize:
+    get:
+      tags: [Auth]
+      summary: Start login
+      description: |
+        Public, rate limited (10 per minute). Creates a browser-bound 5-minute
+        state, nonce and PKCE challenge and sets the `matrimony-challenge` cookie.
+        The browser then navigates to `authorizationUrl`.
+      responses:
+        "200":
+          description: Where to send the browser.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl: { type: string }
+        "400": { $ref: "#/components/responses/Error400" }
+        "404": { $ref: "#/components/responses/TenantNotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/callback:
+    get:
+      tags: [Auth]
+      summary: Finish login (OAuth redirect target)
+      description: |
+        Public, rate limited. The identity provider redirects the browser here. Consumes
+        the one-time challenge cookie, exchanges the code, verifies the identity and the
+        local account, and sets the HttpOnly `matrimony-session` cookie.
+
+        It never returns tokens. The browser is redirected to the frontend, which then
+        calls `POST /api/v1/auth/session` (feature: Session handoff).
+
+        Because the challenge is single use, reloading this URL after a failure ends in
+        the login-page redirect below, not in a second attempt.
+      responses:
+        "302":
+          description: |
+            Success: `Location: /{locale}/auth/complete` and the session cookie is set.
+            Expected login failure (for example a cancelled login or an expired challenge):
+            `Location: /{locale}/login?error=<code>` and no session is created.
+            `<code>` is a stable error code such as OAUTH_EXCHANGE_FAILED,
+            OAUTH_CHALLENGE_EXPIRED, ACCOUNT_NOT_ACTIVE or INVALID_REQUEST. `{locale}` is
+            the agency's default language (`bn` or `en`).
+          headers:
+            Location:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error400" }
+        "404": { $ref: "#/components/responses/TenantNotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500":
+          description: An unexpected failure. Details are never exposed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/auth/session:
+    post:
+      tags: [Session handoff]
+      summary: Start or restore the browser session
+      description: |
+        Needs the session cookie and a same-origin `Origin` header. No CSRF header is
+        required, because this call is what issues the CSRF token to the browser. Rotates
+        the session's refresh token with the provider, exactly like `/auth/refresh`, and
+        returns a fresh access token plus the session's CSRF token.
+
+        Used by the frontend completion page right after login, and again whenever the
+        in-memory token is lost (page reload, new tab). Serialize calls: a concurrent
+        duplicate returns `409 REFRESH_UNAVAILABLE`. After any failure other than 409 the
+        user must log in again.
+      responses:
+        "200":
+          description: A fresh token set for this session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tokens" }
+        "400": { $ref: "#/components/responses/Error400" }
+        "401": { $ref: "#/components/responses/Error401" }
+        "403": { $ref: "#/components/responses/Error403" }
+        "409":
+          description: Another refresh is running. Retry after it finishes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate the access token
+      description: |
+        Needs the session cookie, a same-origin `Origin` header and the `X-CSRF-Token`
+        header. Serialize calls: a concurrent duplicate returns `409 REFRESH_UNAVAILABLE`.
+        After any failure other than 409, the user must log in again.
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "200":
+          description: A new token set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tokens" }
+        "400": { $ref: "#/components/responses/Error400" }
+        "401": { $ref: "#/components/responses/Error401" }
+        "403": { $ref: "#/components/responses/Error403" }
+        "409":
+          description: Another refresh is running. Retry after it finishes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: End the session
+      description: |
+        Same browser protection as refresh. Local invalidation takes effect
+        immediately; provider revocation is attempted separately.
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "204": { description: Logged out. }
+        "400": { $ref: "#/components/responses/Error400" }
+        "403": { $ref: "#/components/responses/Error403" }
+
+  /api/v1/me:
+    get:
+      tags: [Account]
+      summary: The signed-in account
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The current tenant-local account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Self" }
+        "401": { $ref: "#/components/responses/Error401" }
+        "403": { $ref: "#/components/responses/Error403" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Provider-issued JWT access token. Keep it in memory only.
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: The `csrfToken` from the last token response (43 URL-safe characters).
+      schema: { type: string }
+
+  schemas:
+    Tenant:
+      type: object
+      required: [id, name, locale, content]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        locale: { type: string, enum: [bn, en] }
+        content:
+          type: object
+          description: |
+            The agency's `public_config`: non-secret branding, copy, branches and
+            success stories. Its inner shape is not defined yet.
+          additionalProperties: true
+
+    Self:
+      type: object
+      required: [id, agencyId, role, displayName]
+      properties:
+        id: { type: string }
+        agencyId: { type: string }
+        role: { type: string, enum: [admin, agent, member] }
+        displayName: { type: string }
+
+    Tokens:
+      type: object
+      required: [accessToken, csrfToken, expiresIn]
+      properties:
+        accessToken: { type: string }
+        csrfToken: { type: string }
+        expiresIn: { type: integer, description: Seconds until the access token expires. }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, requestId]
+          properties:
+            code:
+              type: string
+              description: |
+                Stable machine-readable code. Known codes: HOST_INVALID, TENANT_NOT_FOUND,
+                BEARER_TOKEN_REQUIRED, INVALID_ACCESS_TOKEN, SESSION_INVALID, SESSION_EXPIRED,
+                ACCOUNT_NOT_ACTIVE, ROLE_FORBIDDEN, ORIGIN_INVALID, CSRF_INVALID,
+                OAUTH_CHALLENGE_EXPIRED, OAUTH_CONTEXT_MISMATCH, OAUTH_EXCHANGE_FAILED,
+                OAUTH_SUBJECT_MISMATCH, REFRESH_UNAVAILABLE, REFRESH_FAILED_LOGIN_REQUIRED,
+                INVALID_REQUEST, RATE_LIMITED, REQUEST_REJECTED, INTERNAL_ERROR.
+            requestId: { type: string, description: Quote this when reporting a problem. }
+
+  responses:
+    Error400:
+      description: Invalid host or request (HOST_INVALID, INVALID_REQUEST).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Error401:
+      description: Not authenticated or session invalid. Sends `WWW-Authenticate Bearer`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Error403:
+      description: Forbidden (ROLE_FORBIDDEN, ACCOUNT_NOT_ACTIVE, ORIGIN_INVALID, CSRF_INVALID).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TenantNotFound:
+      description: The hostname is not a provisioned, active agency (TENANT_NOT_FOUND).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Too many requests (RATE_LIMITED).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

@@ -33,6 +33,9 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
       complete: async () => {
         throw new Error('unused');
       },
+      bootstrap: async () => {
+        throw new Error('unused');
+      },
       refresh: async () => {
         throw new Error('unused');
       },

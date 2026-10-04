@@ -18,7 +18,10 @@ export interface AppDependencies {
   config: AppConfig;
   logger: Logger;
   redis: Redis;
-  auth: Pick<AuthProcess, 'begin' | 'complete' | 'authenticate' | 'refresh' | 'logout'>;
+  auth: Pick<
+    AuthProcess,
+    'begin' | 'complete' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'
+  >;
   identities: Pick<IdentityService, 'tenant'>;
   ready: () => Promise<void>;
 }
