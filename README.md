@@ -2,6 +2,8 @@
 
 Resource-first Node.js 24 / TypeScript / Fastify scaffold for a multi-tenant matrimony platform. One API and one event-delivery worker; explicit dependency injection in `src/container.ts`.
 
+Before making changes, read [AGENTS.md](AGENTS.md) for the team workflow, engineering rules, review expectations and developer handoff. [CLAUDE.md](CLAUDE.md) references the same guidance for Claude Code.
+
 The [scaffold plan](docs/design/backend-scaffold-plan.md) records the architecture decisions. The [20-feature launch checklist](docs/design/launch-features.md) remains the product backlog. This scaffold implements infrastructure, public tenant configuration and an authenticated account endpoint—not the full launch features.
 
 ## Structure
