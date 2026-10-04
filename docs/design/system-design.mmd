@@ -1,0 +1,44 @@
+flowchart TB
+    USER["Visitors · Members / Families · Agents · Admins"]
+    EDGE["TLS ingress / reverse proxy<br/>Trusted hostname · abuse protection"]
+    WEB["Next.js web<br/>Bengali-first public site + role portals"]
+    USER --> EDGE
+    EDGE -->|"Pages and assets"| WEB
+    EDGE -->|"Same-origin /api/v1"| GATE
+    WEB -->|"SSR API reads with request context"| GATE
+
+    subgraph API["Node.js modular monolith — NestJS / TypeScript"]
+        GATE["Request boundary<br/>Tenant resolution · session · validation · authorization"]
+        TENANT["Tenancy and Content<br/>1.1 · 1.4 · 1.5"]
+        IDENTITY["Identity and Accounts<br/>1.2"]
+        PROFILE["Profiles, Media and Reviews<br/>2.1 · 4.2 · 4.3"]
+        MATCH["Discovery and Matching<br/>2.2 · 2.3 · 3.1 · 3.2 · 3.3"]
+        BILL["Billing and Entitlements<br/>1.3 · 2.5 · 4.4 · 5.1 · 5.2 · 5.3"]
+        INBOX["Notifications<br/>2.4"]
+        REPORT["Reporting<br/>4.1"]
+        TX["Repositories + shared transaction context<br/>Agency predicates · RLS · locks · safe projections"]
+        GATE --> TENANT & IDENTITY & PROFILE & MATCH & BILL & INBOX & REPORT
+        TENANT & IDENTITY & PROFILE & MATCH & BILL & INBOX & REPORT --> TX
+        MATCH -->|"Access and quota policy"| BILL
+    end
+
+    PG[("Managed PostgreSQL<br/>17 domain tables · tenant RLS<br/>Durable payment reconciliation state")]
+    REDIS[("Managed Redis<br/>Tenant-bound sessions · rate limits")]
+    STORE[("Private object storage<br/>Quarantine + approved media<br/>Public branding assets separated")]
+    AUTH["Managed identity / OTP verification<br/>Recommended adapter: Supabase Auth"]
+    SMS["SMS delivery provider<br/>Bangladesh delivery to verify"]
+    BKASH["bKash sandbox<br/>Agency-owned merchant credentials"]
+    WORKER["Node.js worker — same codebase<br/>Reconcile unresolved payments<br/>Clean orphaned media"]
+    SECRETS["Secret manager"]
+    OBS["Structured logs · metrics · alerts"]
+    TX --> PG
+    GATE --> REDIS
+    IDENTITY --> AUTH
+    AUTH -->|"Built-in delivery or authenticated SMS hook"| SMS
+    PROFILE --> STORE
+    BILL --> BKASH
+    WORKER --> PG & STORE & BKASH
+    WORKER -.-> SECRETS
+    BILL -.-> SECRETS
+    API -.-> OBS
+    WORKER -.-> OBS

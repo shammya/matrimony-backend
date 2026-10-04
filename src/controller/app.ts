@@ -1,0 +1,125 @@
+import { randomUUID } from 'node:crypto';
+import Fastify, { type FastifyBaseLogger } from 'fastify';
+import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import { ZodError } from 'zod';
+import type { Redis } from 'ioredis';
+import type { Logger } from 'pino';
+import type { AppConfig } from '../config/env.js';
+import type { AuthProcess } from '../process/auth-process.js';
+import type { IdentityService } from '../service/identity-service.js';
+import { bearerSchema, selfResponseSchema } from '../io/http/contracts.js';
+import { accountResponse } from '../factory/account-response.js';
+import { AppError } from '../exception/app-error.js';
+import { registerAuthController } from './auth-controller.js';
+import './context.js';
+export interface AppDependencies {
+  config: AppConfig;
+  logger: Logger;
+  redis: Redis;
+  auth: Pick<AuthProcess, 'begin' | 'complete' | 'authenticate' | 'refresh' | 'logout'>;
+  identities: Pick<IdentityService, 'tenant'>;
+  ready: () => Promise<void>;
+}
+export async function buildApp(deps: AppDependencies) {
+  const { config } = deps;
+  const app = Fastify({
+    loggerInstance: deps.logger as FastifyBaseLogger,
+    genReqId: () => randomUUID(),
+    requestIdHeader: false,
+    trustProxy: false,
+    bodyLimit: 1024 * 1024,
+    requestTimeout: 15000,
+    connectionTimeout: 15000,
+  });
+  await app.register(cookie);
+  await app.register(helmet, { referrerPolicy: { policy: 'no-referrer' } });
+  await app.register(rateLimit, {
+    redis: deps.redis,
+    max: 120,
+    timeWindow: 60000,
+    skipOnError: false,
+    keyGenerator: (req) => req.ip,
+    nameSpace: 'matrimony:rate:',
+  });
+  app.decorateRequest('tenant', null);
+  app.decorateRequest('principal', null);
+  app.decorateRequest('canonicalOrigin', '');
+  app.addHook('onRequest', async (req, reply) => {
+    reply.header('x-request-id', req.id).header('cache-control', 'no-store');
+    if (req.routeOptions.config.tenantRequired === false) return;
+    const host = req.headers.host?.toLowerCase();
+    if (!host || !/^[a-z0-9.-]+(?::[0-9]{1,5})?$/.test(host))
+      throw new AppError(400, 'HOST_INVALID');
+    const hostname = host.split(':')[0]!;
+    if (config.NODE_ENV === 'production' && host !== hostname)
+      throw new AppError(400, 'HOST_INVALID');
+    req.tenant = await deps.identities.tenant(hostname);
+    req.canonicalOrigin = `${config.NODE_ENV === 'production' ? 'https' : 'http'}://${host}`;
+    if (req.routeOptions.config.public === true) return;
+    const parsed = bearerSchema.safeParse(req.headers.authorization);
+    if (!parsed.success) throw new AppError(401, 'BEARER_TOKEN_REQUIRED');
+    req.principal = await deps.auth.authenticate(req.tenant.id, parsed.data);
+    const roles = req.routeOptions.config.roles;
+    if (roles && !roles.includes(req.principal.role)) throw new AppError(403, 'ROLE_FORBIDDEN');
+  });
+  app.setErrorHandler((error, req, reply) => {
+    const known = error instanceof AppError;
+    const transport =
+      typeof error === 'object' && error !== null && 'statusCode' in error
+        ? Number(error.statusCode)
+        : 0;
+    const status = known
+      ? error.status
+      : error instanceof ZodError
+        ? 400
+        : transport >= 400 && transport < 500
+          ? transport
+          : 500;
+    const code = known
+      ? error.code
+      : status === 400
+        ? 'INVALID_REQUEST'
+        : status === 429
+          ? 'RATE_LIMITED'
+          : status < 500
+            ? 'REQUEST_REJECTED'
+            : 'INTERNAL_ERROR';
+    if (status >= 500)
+      req.log.error(
+        { code, errorType: error instanceof Error ? error.name : 'Unknown' },
+        'Request failed',
+      );
+    if (status === 401) reply.header('www-authenticate', 'Bearer');
+    return reply.code(status).send({ error: { code, requestId: req.id } });
+  });
+  app.get(
+    '/health/live',
+    { config: { public: true, tenantRequired: false, rateLimit: false } },
+    async () => ({ status: 'ok' }),
+  );
+  app.get(
+    '/health/ready',
+    { config: { public: true, tenantRequired: false, rateLimit: false } },
+    async (_req, reply) => {
+      try {
+        await deps.ready();
+        return { status: 'ready' };
+      } catch {
+        return reply.code(503).send({ status: 'unavailable' });
+      }
+    },
+  );
+  app.get('/api/v1/public/tenant', { config: { public: true } }, async (req) => ({
+    id: req.tenant!.id,
+    name: req.tenant!.name,
+    locale: req.tenant!.locale,
+    content: req.tenant!.publicConfig,
+  }));
+  app.get('/api/v1/me', { schema: { response: { 200: selfResponseSchema } } }, async (req) =>
+    accountResponse(req.principal!),
+  );
+  registerAuthController(app, deps.auth, config);
+  return app;
+}

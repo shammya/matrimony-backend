@@ -1,0 +1,35 @@
+name: Backend checks
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: matrimony_scaffold_test
+          POSTGRES_PASSWORD: test_password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+      mongo:
+        image: mongo:8
+        ports: ["27017:27017"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:integration
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:test_password@localhost:5432/matrimony_scaffold_test
+          TEST_REDIS_URL: redis://localhost:6379
+          TEST_MONGO_URL: mongodb://localhost:27017
+      - run: npm audit --omit=dev --audit-level=high
