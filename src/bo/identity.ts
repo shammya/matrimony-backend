@@ -1,3 +1,4 @@
+import type { PublicConfig } from './public-config.js';
 export interface Identity {
   issuer: string;
   subject: string;
@@ -17,5 +18,5 @@ export interface Tenant {
   hostname: string;
   name: string;
   locale: string;
-  publicConfig: Record<string, unknown>;
+  publicConfig: PublicConfig;
 }

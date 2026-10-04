@@ -21,7 +21,13 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
     identities: {
       tenant: async (host) => {
         if (host !== 'localhost') throw new AppError(404, 'TENANT_NOT_FOUND');
-        return { id: agency, hostname: host, name: 'MSBD', locale: 'bn', publicConfig: {} };
+        return {
+          id: agency,
+          hostname: host,
+          name: 'MSBD',
+          locale: 'bn',
+          publicConfig: { branches: [], successStories: [] },
+        };
       },
     },
     auth: {

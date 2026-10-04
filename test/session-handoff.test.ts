@@ -34,7 +34,7 @@ async function build(
           hostname: host,
           name: 'MSBD',
           locale: overrides.locale ?? 'bn',
-          publicConfig: {},
+          publicConfig: { branches: [], successStories: [] },
         };
       },
     },
