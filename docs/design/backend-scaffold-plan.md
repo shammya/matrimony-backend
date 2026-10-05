@@ -4,11 +4,11 @@
 
 Use a resource-first TypeScript modular monolith with Fastify and explicit constructor injection. This supersedes the earlier NestJS/opaque-session proposal. Business domains group files within layers; they are not top-level deployment units.
 
-| Approach | Trade-off | Decision |
-|---|---|---|
-| NestJS modules | Built-in conventions, decorators and container; less direct fit for your explicit wiring style | Previously proposed |
-| Fastify + composition root | Small runtime, explicit dependencies and strong transport schemas; boundaries must be enforced by tooling | Selected |
-| Express + manual middleware | Familiar but more assembly for request schemas, lifecycle and serialization | Not selected |
+| Approach                    | Trade-off                                                                                                 | Decision            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------- |
+| NestJS modules              | Built-in conventions, decorators and container; less direct fit for your explicit wiring style            | Previously proposed |
+| Fastify + composition root  | Small runtime, explicit dependencies and strong transport schemas; boundaries must be enforced by tooling | Selected            |
+| Express + manual middleware | Familiar but more assembly for request schemas, lifecycle and serialization                               | Not selected        |
 
 ## Dependency structure
 

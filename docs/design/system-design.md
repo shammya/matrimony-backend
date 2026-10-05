@@ -10,11 +10,11 @@ Read with [launch feature checklist](launch-features.md), [core entities and ERD
 
 Build a **modular monolith**: one Node.js backend codebase, one synchronous API process and one background-worker process. Business modules call each other in-process and share PostgreSQL transactions. The worker uses the same application services and tenant rules.
 
-| Option | Trade-off | Decision |
-|---|---|---|
-| Next.js-only backend | Fewer processes, but couples the frontend migration to backend operations and worker deployment | Viable, but less suitable for the separately planned Node.js backend |
-| Modular Node.js API + worker | Clear module ownership, straightforward transactions, independently scalable runtime processes | Recommended |
-| Microservices | Independent service ownership at the cost of distributed transactions and more operations | Defer until measured scale or team ownership justifies extraction |
+| Option                       | Trade-off                                                                                       | Decision                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Next.js-only backend         | Fewer processes, but couples the frontend migration to backend operations and worker deployment | Viable, but less suitable for the separately planned Node.js backend |
+| Modular Node.js API + worker | Clear module ownership, straightforward transactions, independently scalable runtime processes  | Recommended                                                          |
+| Microservices                | Independent service ownership at the cost of distributed transactions and more operations       | Defer until measured scale or team ownership justifies extraction    |
 
 Recommended implementation baseline: **TypeScript, NestJS with its Fastify adapter, versioned REST/OpenAPI, PostgreSQL with `pg` and SQL migrations**, plus managed Redis for app sessions and distributed rate limits. Next.js serves the Bengali-first frontend. Use private object storage, a managed identity provider and provider adapters for OTP and bKash. Nest's modules provide explicit exported interfaces; the Fastify adapter is an officially supported option. [Nest modules](https://docs.nestjs.com/modules), [Fastify adapter](https://docs.nestjs.com/techniques/performance).
 
@@ -75,15 +75,15 @@ The API is the only domain-data entry point. The browser never receives database
 
 ## 3. Module responsibilities
 
-| Module | Owns | Contract |
-|---|---|---|
-| Tenancy and Content | Agencies, hostname resolver, public branding/page config | Resolve active host; expose only public config; seed tenants operationally |
-| Identity and Accounts | Accounts, registration consent, identity adapter, app sessions | Verify identity; bind tenant account; provision staff through authorized operations |
-| Profiles, Media and Reviews | Profiles, contacts, preferences, photos, approval requests, agent assignment | Own draft/edit/approve/publish workflows and privacy projections |
-| Discovery and Matching | Search, scoring, recommendations, interests | Same-agency candidates; deterministic compatibility; explicit mutual consent |
-| Billing and Entitlements | Plans, merchant connections, orders, attempts, subscriptions, usage | Verified collection; immutable purchase terms; concurrent-safe access consumption |
-| Notifications | Inbox entries and localized template catalog | Append deduplicated notifications inside the originating transaction; list only own inbox |
-| Reporting | Tenant-scoped read queries, no separate store | Registration/pending/active/confirmed-revenue counts |
+| Module                      | Owns                                                                         | Contract                                                                                  |
+| --------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Tenancy and Content         | Agencies, hostname resolver, public branding/page config                     | Resolve active host; expose only public config; seed tenants operationally                |
+| Identity and Accounts       | Accounts, registration consent, identity adapter, app sessions               | Verify identity; bind tenant account; provision staff through authorized operations       |
+| Profiles, Media and Reviews | Profiles, contacts, preferences, photos, approval requests, agent assignment | Own draft/edit/approve/publish workflows and privacy projections                          |
+| Discovery and Matching      | Search, scoring, recommendations, interests                                  | Same-agency candidates; deterministic compatibility; explicit mutual consent              |
+| Billing and Entitlements    | Plans, merchant connections, orders, attempts, subscriptions, usage          | Verified collection; immutable purchase terms; concurrent-safe access consumption         |
+| Notifications               | Inbox entries and localized template catalog                                 | Append deduplicated notifications inside the originating transaction; list only own inbox |
+| Reporting                   | Tenant-scoped read queries, no separate store                                | Registration/pending/active/confirmed-revenue counts                                      |
 
 One application service owns a use-case transaction. Modules expose narrow methods accepting its transaction context; they do not start hidden nested transactions or write another module's tables through arbitrary SQL. Reporting may use explicit read projections across tables. Avoid a generic repository/framework abstraction that obscures authorization.
 
@@ -100,13 +100,13 @@ Suggested API groups: `/api/v1/public`, `/auth`, `/me/profile`, `/profiles`, `/m
 
 The same external identity may bind to separate tenant-local accounts, as allowed by the entity design; this does not grant cross-agency access. Independent credentials per agency require a tenant-aware identity provider and remain a separate decision. No tenant UI or platform-super-admin portal is introduced.
 
-| Actor | Permitted launch access |
-|---|---|
-| Visitor | Tenant public pages, pricing, registration/login |
-| Member/family account | Own profile/requests/payments/inbox; approved candidate projections within entitlement and consent rules |
-| Agent | Assigned clients/reviews/manual receipts; safe discovery of same-agency candidates; publish recommendations; cannot impersonate member consent |
-| Agency admin | Agency staff, assignment, profiles/reviews, plans, payments and count cards |
-| Worker | Only controlled reconciliation/cleanup operations in an explicit agency context |
+| Actor                 | Permitted launch access                                                                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Visitor               | Tenant public pages, pricing, registration/login                                                                                               |
+| Member/family account | Own profile/requests/payments/inbox; approved candidate projections within entitlement and consent rules                                       |
+| Agent                 | Assigned clients/reviews/manual receipts; safe discovery of same-agency candidates; publish recommendations; cannot impersonate member consent |
+| Agency admin          | Agency staff, assignment, profiles/reviews, plans, payments and count cards                                                                    |
+| Worker                | Only controlled reconciliation/cleanup operations in an explicit agency context                                                                |
 
 ## 5. Critical request flows
 
@@ -175,14 +175,14 @@ Deploy Next.js, API and worker as separate processes from versioned builds, with
 
 Initial test envelope, to confirm rather than treat as a forecast: 10,000 profiles/agency, 100 concurrent authenticated users and 20 requests/second. Target p95 under 500 ms for indexed reads and under 1 second for local writes, excluding provider calls/media transfer. Measure query plans at representative data volume before acceptance. Limit page size to 50, bound scoring work, and use `(created_at, id)` cursors; avoid whole-pool reads and N+1 queries. No Elasticsearch or ML service is needed. Add indexes based on actual combined filters and query plans.
 
-| Failure | Required behavior |
-|---|---|
-| PostgreSQL unavailable | Fail domain operations explicitly; never fabricate successful approvals, payments or quotas |
-| Redis unavailable | Deny new/protected session operations and OTP sends safely; public pages can continue |
-| OTP/SMS unavailable | Show retryable registration/login failure; existing valid app sessions still work |
-| bKash timeout/outage | Leave attempt unresolved, back off/query/alert; preserve other site features |
-| Worker stopped | API stays available; unresolved payments wait and emit an age/heartbeat alert |
-| Storage unavailable | Fail new upload/access issuance; retain approved metadata and existing photos |
+| Failure                  | Required behavior                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| PostgreSQL unavailable   | Fail domain operations explicitly; never fabricate successful approvals, payments or quotas              |
+| Redis unavailable        | Deny new/protected session operations and OTP sends safely; public pages can continue                    |
+| OTP/SMS unavailable      | Show retryable registration/login failure; existing valid app sessions still work                        |
+| bKash timeout/outage     | Leave attempt unresolved, back off/query/alert; preserve other site features                             |
+| Worker stopped           | API stays available; unresolved payments wait and emit an age/heartbeat alert                            |
+| Storage unavailable      | Fail new upload/access issuance; retain approved metadata and existing photos                            |
 | Duplicate request/return | Return existing result or a conflict; never duplicate receipt, subscription or mutual-match notification |
 
 Set explicit provider, HTTP, database statement and lock timeouts; calibrate them to contracted provider behavior. Cap total DB pools across replicas and workers. Keep external calls outside database transactions. Retry transaction conflicts only when the use case is safely replayable, with the same idempotency key.

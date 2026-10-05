@@ -22,3 +22,14 @@ export const account = {
   role: 'member' as const,
   displayName: 'Test member',
 };
+const unused = async () => {
+  throw new Error('unused');
+};
+/** A profile service that must not be reached, for tests about other routes. */
+export const unusedProfiles = {
+  get: unused,
+  save: unused,
+  submit: unused,
+  requestEdit: unused,
+  cancelPending: unused,
+};

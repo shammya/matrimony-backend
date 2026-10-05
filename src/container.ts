@@ -16,6 +16,9 @@ import { createMongo } from './mongo/config/client.js';
 import { MongoEventRepository } from './mongo/repository/event-repository.js';
 import { MongoEventService } from './mongo/service/event-service.js';
 import type { EventDocument } from './mongo/entity/workflow-event.js';
+import { ProfileRepository } from './db/raw/repository/profile-repository.js';
+import { ProfileDbService } from './db/service/profile-db-service.js';
+import { ProfileService } from './service/profile-service.js';
 import { EventDeliveryProcess } from './process/event-delivery-process.js';
 export async function createApiContainer(config: AppConfig, logger: Logger) {
   const db = createDatabase(config, logger);
@@ -50,6 +53,9 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       redis,
       identities,
       auth,
+      profiles: new ProfileService(
+        new ProfileDbService(db, new ProfileRepository(), new EventRepository()),
+      ),
       ready: async () => {
         await db.ping();
         await redis.ping();

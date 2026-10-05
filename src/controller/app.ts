@@ -13,6 +13,9 @@ import { bearerSchema, selfResponseSchema } from '../io/http/contracts.js';
 import { accountResponse } from '../factory/account-response.js';
 import { AppError } from '../exception/app-error.js';
 import { registerAuthController } from './auth-controller.js';
+import { registerProfileController } from './profile-controller.js';
+import { fieldProblems } from '../io/http/validation.js';
+import type { ProfileService } from '../service/profile-service.js';
 import './context.js';
 export interface AppDependencies {
   config: AppConfig;
@@ -23,6 +26,7 @@ export interface AppDependencies {
     'begin' | 'complete' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'
   >;
   identities: Pick<IdentityService, 'tenant'>;
+  profiles: Pick<ProfileService, 'get' | 'save' | 'submit' | 'requestEdit' | 'cancelPending'>;
   ready: () => Promise<void>;
 }
 export async function buildApp(deps: AppDependencies) {
@@ -95,7 +99,14 @@ export async function buildApp(deps: AppDependencies) {
         'Request failed',
       );
     if (status === 401) reply.header('www-authenticate', 'Bearer');
-    return reply.code(status).send({ error: { code, requestId: req.id } });
+    const details = known
+      ? error.details
+      : error instanceof ZodError
+        ? { fields: fieldProblems(error) }
+        : undefined;
+    return reply
+      .code(status)
+      .send({ error: { code, requestId: req.id, ...(details && { details }) } });
   });
   app.get(
     '/health/live',
@@ -124,5 +135,6 @@ export async function buildApp(deps: AppDependencies) {
     accountResponse(req.principal!),
   );
   registerAuthController(app, deps.auth, config);
+  registerProfileController(app, deps.profiles);
   return app;
 }

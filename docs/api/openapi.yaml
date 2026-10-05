@@ -13,7 +13,7 @@ info:
 
     Rules for every route: the agency comes from the request `Host` header (an allowlisted
     hostname; `X-Forwarded-Host` is ignored), except for `/health/*`. Every response is
-    `cache-control: no-store`. Errors use `{ error: { code, requestId } }`.
+    `cache-control: no-store`. Errors use `{ error: { code, requestId, details? } }`.
 servers:
   - url: /
 tags:
@@ -22,6 +22,7 @@ tags:
   - name: Auth
   - name: Session handoff
   - name: Account
+  - name: My profile
 
 paths:
   /health/live:
@@ -30,7 +31,7 @@ paths:
       summary: Process liveness
       description: Public. No agency needed.
       responses:
-        "200":
+        '200':
           description: The process is running.
           content:
             application/json:
@@ -46,7 +47,7 @@ paths:
       summary: PostgreSQL and Redis availability
       description: Public. No agency needed.
       responses:
-        "200":
+        '200':
           description: Dependencies are reachable.
           content:
             application/json:
@@ -55,7 +56,7 @@ paths:
                 required: [status]
                 properties:
                   status: { type: string, const: ready }
-        "503":
+        '503':
           description: A dependency is unavailable.
           content:
             application/json:
@@ -71,13 +72,13 @@ paths:
       summary: Public configuration of the agency for this hostname
       description: Public. Branding and public content only, never secrets.
       responses:
-        "200":
+        '200':
           description: The active agency for the request hostname.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Tenant" }
-        "400": { $ref: "#/components/responses/Error400" }
-        "404": { $ref: "#/components/responses/TenantNotFound" }
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
 
   /api/v1/auth/authorize:
     get:
@@ -85,7 +86,7 @@ paths:
       summary: Start login
       description: Public, 10 per minute. Sets the 5-minute `matrimony-challenge` cookie.
       responses:
-        "200":
+        '200':
           description: Where to send the browser.
           content:
             application/json:
@@ -94,9 +95,9 @@ paths:
                 required: [authorizationUrl]
                 properties:
                   authorizationUrl: { type: string }
-        "400": { $ref: "#/components/responses/Error400" }
-        "404": { $ref: "#/components/responses/TenantNotFound" }
-        "429": { $ref: "#/components/responses/RateLimited" }
+        '400': { $ref: '#/components/responses/Error400' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /api/v1/auth/callback:
     get:
@@ -106,7 +107,7 @@ paths:
         Public, 10 per minute. Needs the challenge cookie, which is single use. Never returns
         tokens: it sets the `matrimony-session` cookie and redirects.
       responses:
-        "302":
+        '302':
           description: |
             Success: `Location: /{locale}/auth/complete` and the session cookie is set.
             Expected failure: `Location: /{locale}/login?error=<code>` and no session.
@@ -114,14 +115,14 @@ paths:
           headers:
             Location:
               schema: { type: string }
-        "400": { $ref: "#/components/responses/Error400" }
-        "404": { $ref: "#/components/responses/TenantNotFound" }
-        "429": { $ref: "#/components/responses/RateLimited" }
-        "500":
+        '400': { $ref: '#/components/responses/Error400' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500':
           description: An unexpected failure. Details are never exposed.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/auth/session:
     post:
@@ -131,20 +132,20 @@ paths:
         Needs the session cookie and a same-origin `Origin` header, but no CSRF header: this
         call issues the CSRF token. A concurrent duplicate returns 409 REFRESH_UNAVAILABLE.
       responses:
-        "200":
+        '200':
           description: A fresh token set for this session.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Tokens" }
-        "400": { $ref: "#/components/responses/Error400" }
-        "401": { $ref: "#/components/responses/Error401" }
-        "403": { $ref: "#/components/responses/Error403" }
-        "409":
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '409':
           description: Another refresh is running. Retry after it finishes.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "429": { $ref: "#/components/responses/RateLimited" }
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /api/v1/auth/refresh:
     post:
@@ -154,22 +155,22 @@ paths:
         Needs the session cookie, a same-origin `Origin` header and `X-CSRF-Token`. 409
         REFRESH_UNAVAILABLE means another refresh is running; any other failure means log in again.
       parameters:
-        - { $ref: "#/components/parameters/CsrfToken" }
+        - { $ref: '#/components/parameters/CsrfToken' }
       responses:
-        "200":
+        '200':
           description: A new token set.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Tokens" }
-        "400": { $ref: "#/components/responses/Error400" }
-        "401": { $ref: "#/components/responses/Error401" }
-        "403": { $ref: "#/components/responses/Error403" }
-        "409":
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '409':
           description: Another refresh is running. Retry after it finishes.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "429": { $ref: "#/components/responses/RateLimited" }
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /api/v1/auth/logout:
     post:
@@ -177,11 +178,11 @@ paths:
       summary: End the session
       description: Same protection as refresh. Takes effect immediately.
       parameters:
-        - { $ref: "#/components/parameters/CsrfToken" }
+        - { $ref: '#/components/parameters/CsrfToken' }
       responses:
-        "204": { description: Logged out. }
-        "400": { $ref: "#/components/responses/Error400" }
-        "403": { $ref: "#/components/responses/Error403" }
+        '204': { description: Logged out. }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
 
   /api/v1/me:
     get:
@@ -190,13 +191,146 @@ paths:
       security:
         - bearerAuth: []
       responses:
-        "200":
+        '200':
           description: The current tenant-local account.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Self" }
-        "401": { $ref: "#/components/responses/Error401" }
-        "403": { $ref: "#/components/responses/Error403" }
+              schema: { $ref: '#/components/schemas/Self' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+
+  /api/v1/me/profile:
+    get:
+      tags: [My profile]
+      summary: The member's own profile and review state
+      description: Members only. `profile` is null until the first save.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The profile, the waiting review and the last decision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnProfileState' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+    put:
+      tags: [My profile]
+      summary: Save the draft
+      description: Creates the profile on the first save. Only a draft or rejected profile can be saved; a rejected one becomes a draft again.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileInput' }
+      responses:
+        '200':
+          description: The saved state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnProfileState' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '409':
+          {
+            description: 'PROFILE_VERSION_CONFLICT, PROFILE_LOCKED or PROFILE_EDIT_REQUIRES_REVIEW.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/profile/submit:
+    post:
+      tags: [My profile]
+      summary: Send the draft for review
+      description: 'Needs every required field: full name, date of birth, gender, marital status, height, religion, current district, highest degree, occupation and phone.'
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileSubmit' }
+      responses:
+        '200':
+          description: The profile is now pending review.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnProfileState' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_VERSION_CONFLICT, PROFILE_LOCKED or PROFILE_STATE_INVALID.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'PROFILE_INCOMPLETE, with details.fields listing what is missing.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/profile/edit-requests:
+    post:
+      tags: [My profile]
+      summary: Ask for changes to a published profile
+      description: The published profile stays as it is until a reviewer approves. Only the fields that differ are recorded.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileInput' }
+      responses:
+        '200':
+          description: The state with a waiting field update.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnProfileState' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_VERSION_CONFLICT, PROFILE_LOCKED or PROFILE_STATE_INVALID.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'NO_CHANGES or PROFILE_INCOMPLETE.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/profile/pending-review:
+    delete:
+      tags: [My profile]
+      summary: Withdraw the waiting review
+      description: A first submission goes back to being an editable draft; a change request is dropped.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The state after withdrawing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnProfileState' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND or NO_PENDING_REVIEW.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
 
 components:
   securitySchemes:
@@ -222,7 +356,7 @@ components:
         id: { type: string }
         name: { type: string }
         locale: { type: string, enum: [bn, en] }
-        content: { $ref: "#/components/schemas/PublicConfig" }
+        content: { $ref: '#/components/schemas/PublicConfig' }
 
     LocalizedText:
       type: object
@@ -246,7 +380,7 @@ components:
               description: An `https://` URL or a path starting with `/`. Anything else is ignored.
             primaryColor:
               type: string
-              pattern: "^#[0-9a-fA-F]{6}$"
+              pattern: '^#[0-9a-fA-F]{6}$'
               description: Main brand color as `#RRGGBB`. It reaches CSS, so nothing else is accepted.
         contact:
           type: object
@@ -257,24 +391,24 @@ components:
           type: object
           description: Optional homepage copy that replaces the platform's default wording.
           properties:
-            title: { $ref: "#/components/schemas/LocalizedText" }
-            subtitle: { $ref: "#/components/schemas/LocalizedText" }
-        about: { $ref: "#/components/schemas/LocalizedText" }
+            title: { $ref: '#/components/schemas/LocalizedText' }
+            subtitle: { $ref: '#/components/schemas/LocalizedText' }
+        about: { $ref: '#/components/schemas/LocalizedText' }
         branches:
           type: array
           maxItems: 3
-          items: { $ref: "#/components/schemas/Branch" }
+          items: { $ref: '#/components/schemas/Branch' }
         successStories:
           type: array
           maxItems: 6
-          items: { $ref: "#/components/schemas/SuccessStory" }
+          items: { $ref: '#/components/schemas/SuccessStory' }
 
     Branch:
       type: object
       required: [name]
       properties:
-        name: { $ref: "#/components/schemas/LocalizedText" }
-        address: { $ref: "#/components/schemas/LocalizedText" }
+        name: { $ref: '#/components/schemas/LocalizedText' }
+        address: { $ref: '#/components/schemas/LocalizedText' }
         phone: { type: string, maxLength: 40 }
         mapUrl:
           type: string
@@ -285,8 +419,8 @@ components:
       required: [names]
       description: Only stories the couple has agreed to publish belong here.
       properties:
-        names: { $ref: "#/components/schemas/LocalizedText" }
-        story: { $ref: "#/components/schemas/LocalizedText" }
+        names: { $ref: '#/components/schemas/LocalizedText' }
+        story: { $ref: '#/components/schemas/LocalizedText' }
         year: { type: integer, minimum: 1900, maximum: 2100 }
 
     Self:
@@ -306,6 +440,302 @@ components:
         csrfToken: { type: string }
         expiresIn: { type: integer, description: Seconds until the access token expires. }
 
+    Gender:
+      type: string
+      enum: [male, female]
+    MaritalStatus:
+      type: string
+      enum: [never_married, divorced, widowed]
+    Complexion:
+      type: string
+      enum: [very_fair, fair, medium, olive, dark]
+    BloodGroup:
+      type: string
+      enum: [a_pos, a_neg, b_pos, b_neg, ab_pos, ab_neg, o_pos, o_neg]
+    Religion:
+      type: string
+      enum: [islam, hinduism, buddhism, christianity, other]
+    Sect:
+      type: string
+      enum: [sunni, shia, other]
+    EducationLevel:
+      type: string
+      description: Lowest to highest.
+      enum: [ssc, hsc, diploma, bachelors, masters, phd]
+    Degree:
+      type: string
+      enum: [ssc, hsc, diploma, bachelors, masters, phd, other]
+    Occupation:
+      type: string
+      enum: [salaried, business, self_employed, student, homemaker, unemployed, other]
+    IncomeBand:
+      type: string
+      description: Lowest to highest.
+      enum: [below_20k, 20k_50k, 50k_100k, 100k_200k, above_200k]
+    FamilyStatus:
+      type: string
+      description: Lowest to highest.
+      enum: [lower, lower_middle, middle, upper_middle, upper]
+    ReligiousPractice:
+      type: string
+      enum: [practicing, moderate, non_practicing]
+    DietaryPreference:
+      type: string
+      enum: [no_restriction, halal_only, vegetarian, other]
+    ManagedFor:
+      type: string
+      enum: [self, child, sibling, relative, other]
+    District:
+      type: string
+      description: One of the 64 districts of Bangladesh.
+      enum:
+        [
+          barguna,
+          barishal,
+          bhola,
+          jhalokati,
+          patuakhali,
+          pirojpur,
+          bandarban,
+          brahmanbaria,
+          chandpur,
+          chattogram,
+          coxs_bazar,
+          cumilla,
+          feni,
+          khagrachhari,
+          lakshmipur,
+          noakhali,
+          rangamati,
+          dhaka,
+          faridpur,
+          gazipur,
+          gopalganj,
+          kishoreganj,
+          madaripur,
+          manikganj,
+          munshiganj,
+          narayanganj,
+          narsingdi,
+          rajbari,
+          shariatpur,
+          tangail,
+          bagerhat,
+          chuadanga,
+          jashore,
+          jhenaidah,
+          khulna,
+          kushtia,
+          magura,
+          meherpur,
+          narail,
+          satkhira,
+          jamalpur,
+          mymensingh,
+          netrokona,
+          sherpur,
+          bogura,
+          chapainawabganj,
+          joypurhat,
+          naogaon,
+          natore,
+          pabna,
+          rajshahi,
+          sirajganj,
+          dinajpur,
+          gaibandha,
+          kurigram,
+          lalmonirhat,
+          nilphamari,
+          panchagarh,
+          rangpur,
+          thakurgaon,
+          habiganj,
+          moulvibazar,
+          sunamganj,
+          sylhet,
+        ]
+
+    ProfileStatus:
+      type: string
+      enum: [draft, pending_review, rejected, active, paused, matched, closed]
+    ProfileContent:
+      type: object
+      additionalProperties: false
+      description: |
+        Biodata. Every field may be omitted or null in a request (a draft can be partial); a
+        response always contains every field. An empty string counts as null.
+      properties:
+        managedFor: { $ref: '#/components/schemas/ManagedFor' }
+        fullName: { type: string, minLength: 1, maxLength: 100 }
+        dateOfBirth:
+          {
+            type: [string, 'null'],
+            format: date,
+            description: 'YYYY-MM-DD. The member must be 18 to 100 years old.',
+          }
+        gender: { anyOf: [{ $ref: '#/components/schemas/Gender' }, { type: 'null' }] }
+        maritalStatus: { anyOf: [{ $ref: '#/components/schemas/MaritalStatus' }, { type: 'null' }] }
+        heightCm: { type: [integer, 'null'], minimum: 100, maximum: 250 }
+        weightKg: { type: [integer, 'null'], minimum: 20, maximum: 300 }
+        complexionCode: { anyOf: [{ $ref: '#/components/schemas/Complexion' }, { type: 'null' }] }
+        bloodGroup: { anyOf: [{ $ref: '#/components/schemas/BloodGroup' }, { type: 'null' }] }
+        nationalityCode: { type: string, pattern: '^[A-Z]{2}$', description: ISO country code. BD when omitted. }
+        religionCode: { anyOf: [{ $ref: '#/components/schemas/Religion' }, { type: 'null' }] }
+        sectCode: { anyOf: [{ $ref: '#/components/schemas/Sect' }, { type: 'null' }] }
+        currentCity: { type: [string, 'null'], maxLength: 100 }
+        currentDistrictCode:
+          { anyOf: [{ $ref: '#/components/schemas/District' }, { type: 'null' }] }
+        originDistrictCode: { anyOf: [{ $ref: '#/components/schemas/District' }, { type: 'null' }] }
+        highestDegreeCode: { anyOf: [{ $ref: '#/components/schemas/Degree' }, { type: 'null' }] }
+        institutionName: { type: [string, 'null'], maxLength: 150 }
+        fieldOfStudy: { type: [string, 'null'], maxLength: 100 }
+        graduationYear: { type: [integer, 'null'], minimum: 1950, maximum: 2100 }
+        occupationCode: { anyOf: [{ $ref: '#/components/schemas/Occupation' }, { type: 'null' }] }
+        jobTitle: { type: [string, 'null'], maxLength: 100 }
+        employerName: { type: [string, 'null'], maxLength: 150 }
+        monthlyIncomeBandCode:
+          { anyOf: [{ $ref: '#/components/schemas/IncomeBand' }, { type: 'null' }] }
+        fatherName: { type: [string, 'null'], maxLength: 100 }
+        fatherOccupation: { type: [string, 'null'], maxLength: 100 }
+        motherName: { type: [string, 'null'], maxLength: 100 }
+        motherOccupation: { type: [string, 'null'], maxLength: 100 }
+        siblingCount: { type: [integer, 'null'], minimum: 0, maximum: 30 }
+        familyStatusCode:
+          { anyOf: [{ $ref: '#/components/schemas/FamilyStatus' }, { type: 'null' }] }
+        religiousPracticeCode:
+          { anyOf: [{ $ref: '#/components/schemas/ReligiousPractice' }, { type: 'null' }] }
+        dietaryPreferenceCode:
+          { anyOf: [{ $ref: '#/components/schemas/DietaryPreference' }, { type: 'null' }] }
+        hobbies: { type: [string, 'null'], maxLength: 500 }
+        aboutMe: { type: [string, 'null'], maxLength: 2000 }
+
+    ContactDetails:
+      type: object
+      additionalProperties: false
+      description: Private contact details. Never shown to other members.
+      properties:
+        contactName: { type: [string, 'null'], maxLength: 100 }
+        contactRelationship: { type: [string, 'null'], maxLength: 50 }
+        phone:
+          {
+            type: [string, 'null'],
+            pattern: "^\\+[1-9][0-9]{7,14}$",
+            description: 'E.164, for example +8801712345678.',
+          }
+        email: { type: [string, 'null'], format: email, maxLength: 200 }
+        permanentAddress: { type: [string, 'null'], maxLength: 300 }
+
+    PartnerPreferences:
+      type: object
+      additionalProperties: false
+      description: Lists are empty when the member has no preference. Ranges may not be reversed.
+      properties:
+        ageMin: { type: [integer, 'null'], minimum: 18, maximum: 100 }
+        ageMax: { type: [integer, 'null'], minimum: 18, maximum: 100 }
+        heightMinCm: { type: [integer, 'null'], minimum: 100, maximum: 250 }
+        heightMaxCm: { type: [integer, 'null'], minimum: 100, maximum: 250 }
+        religionCodes: { type: array, items: { $ref: '#/components/schemas/Religion' } }
+        sectCodes: { type: array, items: { $ref: '#/components/schemas/Sect' } }
+        maritalStatusCodes: { type: array, items: { $ref: '#/components/schemas/MaritalStatus' } }
+        educationMinCode:
+          { anyOf: [{ $ref: '#/components/schemas/EducationLevel' }, { type: 'null' }] }
+        occupationCodes: { type: array, items: { $ref: '#/components/schemas/Occupation' } }
+        districtCodes: { type: array, items: { $ref: '#/components/schemas/District' } }
+        incomeMinBandCode:
+          { anyOf: [{ $ref: '#/components/schemas/IncomeBand' }, { type: 'null' }] }
+        incomeMaxBandCode:
+          { anyOf: [{ $ref: '#/components/schemas/IncomeBand' }, { type: 'null' }] }
+        familyStatusMinCode:
+          { anyOf: [{ $ref: '#/components/schemas/FamilyStatus' }, { type: 'null' }] }
+
+    ProfileData:
+      type: object
+      additionalProperties: false
+      properties:
+        profile: { $ref: '#/components/schemas/ProfileContent' }
+        contact: { $ref: '#/components/schemas/ContactDetails' }
+        preferences: { $ref: '#/components/schemas/PartnerPreferences' }
+    ProfileInput:
+      type: object
+      additionalProperties: false
+      required: [profile]
+      description: |
+        The whole editable content, replacing what was there. Owner, agency, status, member code
+        and the profile version can never be set by the client other than as the version last seen.
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: The profile version last seen. Omit only on the very first save.
+        profile: { $ref: '#/components/schemas/ProfileContent' }
+        contact: { $ref: '#/components/schemas/ContactDetails' }
+        preferences: { $ref: '#/components/schemas/PartnerPreferences' }
+    OwnProfile:
+      type: object
+      required: [id, memberCode, status, version, currentDivisionCode, createdAt, updatedAt, data]
+      properties:
+        id: { type: string, format: uuid }
+        memberCode: { type: string, description: 'For example M0483921.' }
+        status: { $ref: '#/components/schemas/ProfileStatus' }
+        version: { type: integer, description: Rises on every change. }
+        currentDivisionCode: { type: [string, 'null'], description: Worked out from the district. }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        data: { $ref: '#/components/schemas/ProfileData' }
+    ProposedChanges:
+      type: object
+      additionalProperties: false
+      description: Only the fields that differ from the published profile.
+      properties:
+        profile: { type: object, additionalProperties: true }
+        contact: { type: object, additionalProperties: true }
+        preferences: { type: object, additionalProperties: true }
+    ProfileReview:
+      type: object
+      required:
+        [
+          id,
+          kind,
+          status,
+          baseProfileVersion,
+          proposedChanges,
+          reviewerNotes,
+          reviewedAt,
+          createdAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [initial_submission, field_update] }
+        status: { type: string, enum: [pending, approved, rejected, cancelled] }
+        baseProfileVersion: { type: [integer, 'null'] }
+        proposedChanges:
+          description: For an initial submission, the whole content; for a field update, only what differs.
+          anyOf:
+            [
+              { $ref: '#/components/schemas/ProposedChanges' },
+              { $ref: '#/components/schemas/ProfileData' },
+              { type: 'null' },
+            ]
+        reviewerNotes: { type: [string, 'null'] }
+        reviewedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+    OwnProfileState:
+      type: object
+      required: [profile, pendingReview, lastDecision]
+      properties:
+        profile: { anyOf: [{ $ref: '#/components/schemas/OwnProfile' }, { type: 'null' }] }
+        pendingReview: { anyOf: [{ $ref: '#/components/schemas/ProfileReview' }, { type: 'null' }] }
+        lastDecision:
+          description: The most recent approval or rejection, including the reviewer's note.
+          anyOf: [{ $ref: '#/components/schemas/ProfileReview' }, { type: 'null' }]
+    ProfileSubmit:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1 }
+
     Error:
       type: object
       required: [error]
@@ -322,7 +752,26 @@ components:
                 ACCOUNT_NOT_ACTIVE, ROLE_FORBIDDEN, ORIGIN_INVALID, CSRF_INVALID,
                 OAUTH_CHALLENGE_EXPIRED, OAUTH_CONTEXT_MISMATCH, OAUTH_EXCHANGE_FAILED,
                 OAUTH_SUBJECT_MISMATCH, REFRESH_UNAVAILABLE, REFRESH_FAILED_LOGIN_REQUIRED,
-                INVALID_REQUEST, RATE_LIMITED, REQUEST_REJECTED, INTERNAL_ERROR.
+                INVALID_REQUEST, RATE_LIMITED, REQUEST_REJECTED, INTERNAL_ERROR, and for My profile:
+                PROFILE_NOT_FOUND, PROFILE_VERSION_CONFLICT, PROFILE_LOCKED,
+                PROFILE_EDIT_REQUIRES_REVIEW, PROFILE_STATE_INVALID, PROFILE_INCOMPLETE,
+                NO_PENDING_REVIEW, NO_CHANGES, MEMBER_CODE_UNAVAILABLE.
+            details:
+              type: object
+              description: |
+                Present on INVALID_REQUEST and PROFILE_INCOMPLETE. Each problem names a field by its
+                dotted path (for example `profile.dateOfBirth`) and a stable code the client
+                translates: required, tooLong, invalid, invalidOption, invalidDate, underAge,
+                tooOld, outOfRange, invalidPhone, invalidEmail, rangeOrder. Values are never echoed back.
+              properties:
+                fields:
+                  type: array
+                  items:
+                    type: object
+                    required: [path, code]
+                    properties:
+                      path: { type: string }
+                      code: { type: string }
             requestId: { type: string, description: Quote this when reporting a problem. }
 
   responses:
@@ -330,24 +779,24 @@ components:
       description: Invalid host or request (HOST_INVALID, INVALID_REQUEST).
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+          schema: { $ref: '#/components/schemas/Error' }
     Error401:
       description: Not authenticated or session invalid. Sends `WWW-Authenticate Bearer`.
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+          schema: { $ref: '#/components/schemas/Error' }
     Error403:
       description: Forbidden (ROLE_FORBIDDEN, ACCOUNT_NOT_ACTIVE, ORIGIN_INVALID, CSRF_INVALID).
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+          schema: { $ref: '#/components/schemas/Error' }
     TenantNotFound:
       description: The hostname is not a provisioned, active agency (TENANT_NOT_FOUND).
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+          schema: { $ref: '#/components/schemas/Error' }
     RateLimited:
       description: Too many requests (RATE_LIMITED).
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+          schema: { $ref: '#/components/schemas/Error' }

@@ -4,28 +4,28 @@ Scope baseline: 3 October 2026. **20 features: 14 full-depth, 6 thin.** This doc
 
 Confirmed: MSBD first; tenant-isolated architecture; free basic access; self-service subscriptions plus negotiated assisted fees; agency-owned bKash accounts. Bengali-first UI and a responsive web experience apply throughout.
 
-| Done | ID | Feature | Depth | Owner module | Launch completion criterion |
-|---|---|---|---|---|---|
-| [ ] | 1.1 | Homepage | Full | Tenancy and Content | MSBD branding, Bengali-first copy and working registration/pricing links on mobile and desktop |
-| [ ] | 1.2 | Phone OTP registration | Full | Identity and Accounts | Real SMS OTP, expiry/replay/abuse controls, tenant-bound account, consent and draft profile; family representation supported |
-| [ ] | 1.3 | Pricing page | Full | Billing and Entitlements | Three configured plans with actual prices/benefits and working purchase entry points |
-| [ ] | 1.4 | Success stories | Thin | Tenancy and Content | Six approved config entries displayed; no CMS |
-| [ ] | 1.5 | About/contact | Full | Tenancy and Content | Correct agency details, three branch addresses and usable maps/links |
-| [ ] | 2.1 | My Profile and edit requests | Full | Profiles, Media and Reviews | View own biodata/preferences/photos; save draft; submit edits/photos; pending/review results visible; published content protected |
-| [ ] | 2.2 | My Matches | Full | Discovery and Matching | Same-agency approved suggestions and published agent recommendations, compatibility labels/explanations, no internal-note leakage |
-| [ ] | 2.3 | Interest and mutual match | Full | Discovery and Matching | Send/accept/decline; reciprocal requests converge on one pair; accepted pair notifies both members; contact consent remains explicit |
-| [ ] | 2.4 | Inbox | Thin | Notifications | Paginated own-event list with Bengali templates; no chat or read/unread states |
-| [ ] | 2.5 | Payment status | Full | Billing and Entitlements | Actual receipts, pending verification, outstanding assisted balance and subscription dates/access displayed correctly |
-| [ ] | 3.1 | Basic search | Full | Discovery and Matching | Age, religion, education, profession, current location, marital status and member-code lookup; scoped pagination and safe previews |
-| [ ] | 3.2 | Advanced search | Thin | Discovery and Matching | Same form with five extra plan-gated filters; backend rejects unauthorized filters |
-| [ ] | 3.3 | Profile detail/paywall | Full | Discovery and Matching | Preview/detail/contact projections; quota-aware explicit access; no private fields before permission; clear upgrade action |
-| [ ] | 4.1 | Admin dashboard | Thin | Reporting | Registration, pending, active and confirmed-revenue count cards; sandbox revenue clearly distinguished |
-| [ ] | 4.2 | Profile approval queue | Full | Profiles, Media and Reviews | Initial/edit/photo review, authorized reviewer, approve/reject notes, conflict handling and atomic publication |
-| [ ] | 4.3 | Agent client management | Full | Profiles, Media and Reviews | Authorized staff provisioned; clients created/assigned; assigned list/filter/edit/status actions; recommendations published through Matching |
-| [ ] | 4.4 | Plan management | Thin | Billing and Entitlements | Agency admin edits three seeded plans; existing purchases retain their original terms |
-| [ ] | 5.1 | bKash sandbox checkout | Full | Billing and Entitlements | Agency merchant checkout completes; server confirms provider result; retry/ambiguity recovery; one paid activation |
-| [ ] | 5.2 | Manual payment recording | Full | Billing and Entitlements | Authorized agent/admin records cash/bank receipts against orders; partial balance correct; duplicate submissions do not double-credit |
-| [ ] | 5.3 | Feature gating | Thin | Billing and Entitlements | Three entitlement controls enforced server-side, including concurrent quota requests and subscription expiry |
+| Done | ID  | Feature                      | Depth | Owner module                | Launch completion criterion                                                                                                                  |
+| ---- | --- | ---------------------------- | ----- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| [ ]  | 1.1 | Homepage                     | Full  | Tenancy and Content         | MSBD branding, Bengali-first copy and working registration/pricing links on mobile and desktop                                               |
+| [ ]  | 1.2 | Phone OTP registration       | Full  | Identity and Accounts       | Real SMS OTP, expiry/replay/abuse controls, tenant-bound account, consent and draft profile; family representation supported                 |
+| [ ]  | 1.3 | Pricing page                 | Full  | Billing and Entitlements    | Three configured plans with actual prices/benefits and working purchase entry points                                                         |
+| [ ]  | 1.4 | Success stories              | Thin  | Tenancy and Content         | Six approved config entries displayed; no CMS                                                                                                |
+| [ ]  | 1.5 | About/contact                | Full  | Tenancy and Content         | Correct agency details, three branch addresses and usable maps/links                                                                         |
+| [ ]  | 2.1 | My Profile and edit requests | Full  | Profiles, Media and Reviews | View own biodata/preferences/photos; save draft; submit edits/photos; pending/review results visible; published content protected            |
+| [ ]  | 2.2 | My Matches                   | Full  | Discovery and Matching      | Same-agency approved suggestions and published agent recommendations, compatibility labels/explanations, no internal-note leakage            |
+| [ ]  | 2.3 | Interest and mutual match    | Full  | Discovery and Matching      | Send/accept/decline; reciprocal requests converge on one pair; accepted pair notifies both members; contact consent remains explicit         |
+| [ ]  | 2.4 | Inbox                        | Thin  | Notifications               | Paginated own-event list with Bengali templates; no chat or read/unread states                                                               |
+| [ ]  | 2.5 | Payment status               | Full  | Billing and Entitlements    | Actual receipts, pending verification, outstanding assisted balance and subscription dates/access displayed correctly                        |
+| [ ]  | 3.1 | Basic search                 | Full  | Discovery and Matching      | Age, religion, education, profession, current location, marital status and member-code lookup; scoped pagination and safe previews           |
+| [ ]  | 3.2 | Advanced search              | Thin  | Discovery and Matching      | Same form with five extra plan-gated filters; backend rejects unauthorized filters                                                           |
+| [ ]  | 3.3 | Profile detail/paywall       | Full  | Discovery and Matching      | Preview/detail/contact projections; quota-aware explicit access; no private fields before permission; clear upgrade action                   |
+| [ ]  | 4.1 | Admin dashboard              | Thin  | Reporting                   | Registration, pending, active and confirmed-revenue count cards; sandbox revenue clearly distinguished                                       |
+| [ ]  | 4.2 | Profile approval queue       | Full  | Profiles, Media and Reviews | Initial/edit/photo review, authorized reviewer, approve/reject notes, conflict handling and atomic publication                               |
+| [ ]  | 4.3 | Agent client management      | Full  | Profiles, Media and Reviews | Authorized staff provisioned; clients created/assigned; assigned list/filter/edit/status actions; recommendations published through Matching |
+| [ ]  | 4.4 | Plan management              | Thin  | Billing and Entitlements    | Agency admin edits three seeded plans; existing purchases retain their original terms                                                        |
+| [ ]  | 5.1 | bKash sandbox checkout       | Full  | Billing and Entitlements    | Agency merchant checkout completes; server confirms provider result; retry/ambiguity recovery; one paid activation                           |
+| [ ]  | 5.2 | Manual payment recording     | Full  | Billing and Entitlements    | Authorized agent/admin records cash/bank receipts against orders; partial balance correct; duplicate submissions do not double-credit        |
+| [ ]  | 5.3 | Feature gating               | Thin  | Billing and Entitlements    | Three entitlement controls enforced server-side, including concurrent quota requests and subscription expiry                                 |
 
 Proposed defaults carried from entity design: one profile per member account; modes `self_service`/`assisted`; one free and two paid plans; quota controls are full-profile views, contact views and advanced-search access. The five premium filters are height, income, complexion, family status and district of origin. Paid quotas reset per purchased term; free quotas monthly; repeat targets do not consume twice. Final values/wording need product confirmation.
 
