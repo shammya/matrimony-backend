@@ -4,7 +4,7 @@ Resource-first Node.js 24 / TypeScript / Fastify scaffold for a multi-tenant mat
 
 Before making changes, read [AGENTS.md](AGENTS.md) for the team workflow, engineering rules, review expectations and developer handoff. [CLAUDE.md](CLAUDE.md) references the same guidance for Claude Code.
 
-The [scaffold plan](docs/design/backend-scaffold-plan.md) records the architecture decisions. The [20-feature launch checklist](docs/design/launch-features.md) remains the product backlog. This scaffold implements infrastructure, public tenant configuration and an authenticated account endpoint—not the full launch features.
+The [scaffold plan](docs/design/backend-scaffold-plan.md) records the architecture decisions. The [20-feature launch checklist](docs/design/launch-features.md) remains the product backlog. This scaffold implements infrastructure, public tenant configuration and an authenticated account endpoint—not the full launch features. Progress, each feature's endpoints and who uses them are tracked phase by phase in the [backend tracker](https://claude.ai/artifact/RzGP4ky7jbKQMoUVA2WFYw); the exact API contract is [docs/api/openapi.yaml](docs/api/openapi.yaml) (see [docs/api/README.md](docs/api/README.md)).
 
 ## Structure
 

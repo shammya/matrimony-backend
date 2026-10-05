@@ -3,102 +3,32 @@ info:
   title: Matrimony API
   version: 0.1.0
   description: |
-    The API contract and a plain-language record of what has been built.
+    The machine-readable API contract: every route, field and error code. The frontend
+    generates its TypeScript types from this file (`npm run api:types` in the frontend repo),
+    so keep it exact and keep it short.
 
-    **How to read this file.** Each feature has a section (a tag) that says what the
-    feature does, why it exists and its **Status**, followed by its endpoints. Status is
-    one of: **Implemented**, **In progress**, **Planned**.
+    What each feature does, which endpoints it has and which frontend feature uses them is
+    described phase by phase in the backend tracker, not here:
+    https://claude.ai/artifact/RzGP4ky7jbKQMoUVA2WFYw
 
-    **How to maintain it.** It is written by hand. Add or update a feature's entry in the
-    same change as its controller or response schema. Write the contract for a group of
-    endpoints before building them. The frontend generates its TypeScript types from this
-    file (`npm run api:types` in the frontend repo).
-
-    **Rules that apply everywhere.** Every route except `/health/*` resolves the agency
-    from the request `Host` header (an allowlisted hostname). `X-Forwarded-Host` is
-    ignored. Every response is `cache-control: no-store`. Errors use the envelope
-    `{ error: { code, requestId } }`.
+    Rules for every route: the agency comes from the request `Host` header (an allowlisted
+    hostname; `X-Forwarded-Host` is ignored), except for `/health/*`. Every response is
+    `cache-control: no-store`. Errors use `{ error: { code, requestId } }`.
 servers:
   - url: /
 tags:
   - name: Health
-    description: |
-      **Service health.** Lets monitoring and deploy tooling ask whether the process is
-      alive and whether PostgreSQL and Redis are reachable. No login and no agency needed.
-
-      **Status:** Implemented.
   - name: Tenant
-    description: |
-      **Agency public configuration.** The site is multi-tenant: each agency has its own
-      hostname. This returns the agency's name, default language and public content
-      (branding, copy, branches, success stories) for the hostname in the request, so the
-      frontend can render the right agency before anyone logs in.
-
-      The agency's content is its `public_config`, stored per agency in the database and
-      edited by an operator when the agency is provisioned (there is no CMS or page
-      builder). It holds branding, contact details, homepage copy, the branch addresses and
-      the success stories. It is public and must never hold secrets. The database does not
-      validate its content, so every field is optional and the frontend must validate it and
-      fall back to defaults. Text that readers see can be given in both languages.
-
-      The backend checks and cleans the config before serving it (`src/bo/public-config.ts`):
-      a bad field is dropped, unknown fields are removed, and the colour and link fields
-      accept only safe values. The frontend checks it again and applies it: brand colour,
-      logo, contact details in the footer and optional homepage wording.
-
-      **Status:** Implemented (backend and frontend). The shape of `content` is defined below
-      (PublicConfig) and is a draft for review. New fields are added here when needed.
   - name: Auth
-    description: |
-      **Login through an external identity provider (OIDC).** The backend stores no
-      passwords. The browser is sent to the provider (Auth0 in development), logs in
-      there, and comes back to the callback, which verifies the result, finds the
-      agency-local account and starts a session. The access token is meant to be kept in
-      frontend memory; the refresh token never reaches the browser.
-
-      **Status:** Implemented. After login the callback redirects to a frontend page
-      instead of showing tokens (see Session handoff).
   - name: Session handoff
-    description: |
-      **Getting the browser signed in after the provider login.** Today the callback
-      shows the tokens as raw JSON, so the frontend app never receives them. This feature
-      replaces that with a normal redirect and one small endpoint.
-
-      How it will work:
-      1. The callback verifies the login and sets the session cookie as before, then
-         **redirects** the browser to a frontend page (`/{locale}/auth/complete`). No
-         tokens are placed in the URL or the page.
-      2. That page calls `POST /api/v1/auth/session`. The server uses the session's own
-         stored refresh token to obtain a fresh access token, and returns it with the
-         CSRF token. The access token is kept in frontend memory only.
-      3. The same call restores the session after a page reload or in a new tab, because
-         it needs only the session cookie, not a CSRF token the browser may have lost.
-
-      Why a new endpoint and not `/auth/refresh`: refresh needs the CSRF token, which the
-      browser does not have yet right after login. Why not return the login's own access
-      token: the server stores only a hash of it, never the token.
-
-      Safety: POST only, the `Origin` header must match the site, and the cookie is
-      HttpOnly and host-only, so another website cannot trigger it or read its response.
-      Needs review by an experienced backend or security reviewer before live release.
-
-      **Status:** Implemented. Backend covered by unit and HTTP tests; the frontend login,
-      completion and dashboard pages are built, and the login flow was checked in a browser.
-      Still to confirm: logout and session restore after a reload.
   - name: Account
-    description: |
-      **Current account.** Returns who the signed-in user is inside this agency: id,
-      agency, role (`admin`, `agent` or `member`) and display name. The role is read from
-      the agency's own database on every request, never from the token.
-
-      **Status:** Implemented.
 
 paths:
   /health/live:
     get:
       tags: [Health]
       summary: Process liveness
-      description: Public. Does not need a known tenant.
+      description: Public. No agency needed.
       responses:
         "200":
           description: The process is running.
@@ -114,7 +44,7 @@ paths:
     get:
       tags: [Health]
       summary: PostgreSQL and Redis availability
-      description: Public. Does not need a known tenant.
+      description: Public. No agency needed.
       responses:
         "200":
           description: Dependencies are reachable.
@@ -139,7 +69,7 @@ paths:
     get:
       tags: [Tenant]
       summary: Public configuration of the agency for this hostname
-      description: Public. Returns branding and copy only, never secrets.
+      description: Public. Branding and public content only, never secrets.
       responses:
         "200":
           description: The active agency for the request hostname.
@@ -153,10 +83,7 @@ paths:
     get:
       tags: [Auth]
       summary: Start login
-      description: |
-        Public, rate limited (10 per minute). Creates a browser-bound 5-minute
-        state, nonce and PKCE challenge and sets the `matrimony-challenge` cookie.
-        The browser then navigates to `authorizationUrl`.
+      description: Public, 10 per minute. Sets the 5-minute `matrimony-challenge` cookie.
       responses:
         "200":
           description: Where to send the browser.
@@ -176,24 +103,14 @@ paths:
       tags: [Auth]
       summary: Finish login (OAuth redirect target)
       description: |
-        Public, rate limited. The identity provider redirects the browser here. Consumes
-        the one-time challenge cookie, exchanges the code, verifies the identity and the
-        local account, and sets the HttpOnly `matrimony-session` cookie.
-
-        It never returns tokens. The browser is redirected to the frontend, which then
-        calls `POST /api/v1/auth/session` (feature: Session handoff).
-
-        Because the challenge is single use, reloading this URL after a failure ends in
-        the login-page redirect below, not in a second attempt.
+        Public, 10 per minute. Needs the challenge cookie, which is single use. Never returns
+        tokens: it sets the `matrimony-session` cookie and redirects.
       responses:
         "302":
           description: |
             Success: `Location: /{locale}/auth/complete` and the session cookie is set.
-            Expected login failure (for example a cancelled login or an expired challenge):
-            `Location: /{locale}/login?error=<code>` and no session is created.
-            `<code>` is a stable error code such as OAUTH_EXCHANGE_FAILED,
-            OAUTH_CHALLENGE_EXPIRED, ACCOUNT_NOT_ACTIVE or INVALID_REQUEST. `{locale}` is
-            the agency's default language (`bn` or `en`).
+            Expected failure: `Location: /{locale}/login?error=<code>` and no session.
+            `{locale}` is the agency's default language (`bn` or `en`).
           headers:
             Location:
               schema: { type: string }
@@ -211,15 +128,8 @@ paths:
       tags: [Session handoff]
       summary: Start or restore the browser session
       description: |
-        Needs the session cookie and a same-origin `Origin` header. No CSRF header is
-        required, because this call is what issues the CSRF token to the browser. Rotates
-        the session's refresh token with the provider, exactly like `/auth/refresh`, and
-        returns a fresh access token plus the session's CSRF token.
-
-        Used by the frontend completion page right after login, and again whenever the
-        in-memory token is lost (page reload, new tab). Serialize calls: a concurrent
-        duplicate returns `409 REFRESH_UNAVAILABLE`. After any failure other than 409 the
-        user must log in again.
+        Needs the session cookie and a same-origin `Origin` header, but no CSRF header: this
+        call issues the CSRF token. A concurrent duplicate returns 409 REFRESH_UNAVAILABLE.
       responses:
         "200":
           description: A fresh token set for this session.
@@ -241,9 +151,8 @@ paths:
       tags: [Auth]
       summary: Rotate the access token
       description: |
-        Needs the session cookie, a same-origin `Origin` header and the `X-CSRF-Token`
-        header. Serialize calls: a concurrent duplicate returns `409 REFRESH_UNAVAILABLE`.
-        After any failure other than 409, the user must log in again.
+        Needs the session cookie, a same-origin `Origin` header and `X-CSRF-Token`. 409
+        REFRESH_UNAVAILABLE means another refresh is running; any other failure means log in again.
       parameters:
         - { $ref: "#/components/parameters/CsrfToken" }
       responses:
@@ -266,9 +175,7 @@ paths:
     post:
       tags: [Auth]
       summary: End the session
-      description: |
-        Same browser protection as refresh. Local invalidation takes effect
-        immediately; provider revocation is attempted separately.
+      description: Same protection as refresh. Takes effect immediately.
       parameters:
         - { $ref: "#/components/parameters/CsrfToken" }
       responses:
@@ -319,18 +226,14 @@ components:
 
     LocalizedText:
       type: object
-      description: |
-        Text in one or both supported languages. At least one language is expected; a reader
-        sees their own language when present and the other one otherwise.
+      description: Text in one or both languages. A reader sees their own language, else the other.
       properties:
         bn: { type: string, maxLength: 2000 }
         en: { type: string, maxLength: 2000 }
 
     PublicConfig:
       type: object
-      description: |
-        The agency's non-secret public settings. Every field is optional. Unknown fields are
-        ignored. Placeholder values in development are not real agency content.
+      description: The agency's non-secret public settings. Every field is optional; unknown fields are ignored.
       properties:
         name:
           type: string
@@ -344,9 +247,7 @@ components:
             primaryColor:
               type: string
               pattern: "^#[0-9a-fA-F]{6}$"
-              description: |
-                Main brand color as `#RRGGBB`. It is inserted into CSS, so the frontend
-                accepts nothing else. The text color on top of it is derived for contrast.
+              description: Main brand color as `#RRGGBB`. It reaches CSS, so nothing else is accepted.
         contact:
           type: object
           properties:
