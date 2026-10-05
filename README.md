@@ -29,6 +29,7 @@ src/
     service/                Database operations exposed to business code
   cache/                    Redis configuration and atomic session persistence
   mongo/                    Config, entity, repository and service for events
+  storage/                  Uploaded files behind one interface: local disk or S3
   scheduler/                Small polling loop for the worker
   exception/                Safe application errors
 migrations/                 Versioned SQL, run explicitly
@@ -85,6 +86,19 @@ For an approval/payment/interest workflow, call `EventDbService.append(tx, event
 Authentication spans the provider, Redis and PostgreSQL, so it is not a distributed transaction. Login/refresh events record the authorized operation before session persistence and do not prove token delivery to a browser. Logout prioritizes local revocation even if the subsequent audit write fails; that failure produces an HTTP/server error and needs operational investigation. Domain events do have transaction-level durability.
 
 Alert on `EVENT_DELIVERY_FAILED` with `exhausted: true`, worker absence, and the oldest undelivered outbox row. Investigate provider/storage failures before replaying an exhausted row; reset its attempts/next-attempt time through an authorized tenant-scoped operator transaction. Define retention and purge delivered outbox rows only after the required audit retention period. Mongo event reads are not exposed by the scaffold; future reads must filter by agency and authorization.
+
+## Uploaded files (member photos)
+
+Files are stored through one interface (`src/storage/service/file-storage.ts`), so where they live is configuration, not code:
+
+| `STORAGE_DRIVER` | Use | Settings |
+| --- | --- | --- |
+| `local` (default) | Development and a single server | `STORAGE_LOCAL_DIR` (default `./storage`, git-ignored) |
+| `s3` | Production. Amazon S3 or any S3-compatible store (Cloudflare R2, DigitalOcean Spaces, MinIO) | `S3_BUCKET`, `S3_REGION`, optional `S3_ENDPOINT` and `S3_FORCE_PATH_STYLE=true` for non-AWS stores, optional `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` (without them the AWS credential chain, for example an instance role, is used) |
+
+To move to S3, create a **private** bucket, set the values above and restart. Existing files must be copied across under the same keys (`agency/profile/photo.size.webp`); the database stores only the key. Production refuses to start with `local`, because a second server could not see the first one's files. The S3 driver is tested against a stand-in client, so verify it once against the real bucket before launch.
+
+Photos are never public. The API checks who is asking and streams the image; a bucket must not allow public reads. Uploads are decoded and re-encoded as WebP, which removes location and camera data and anything hidden in the file.
 
 ## Verification and deployment
 

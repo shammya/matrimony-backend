@@ -12,6 +12,8 @@ export const eventSchema = z
       'profile.submitted',
       'profile.edit_requested',
       'profile.review_cancelled',
+      'photo.uploaded',
+      'photo.removed',
       'interest.accepted',
       'payment.confirmed',
     ]),

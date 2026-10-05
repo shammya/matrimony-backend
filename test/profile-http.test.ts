@@ -5,7 +5,7 @@ import type { Redis } from 'ioredis';
 import { buildApp } from '../src/controller/app.js';
 import { AppError } from '../src/exception/app-error.js';
 import type { ProfileActor } from '../src/service/profile-service.js';
-import { account, agency, config } from './fixtures.js';
+import { account, agency, config, unusedPhotos } from './fixtures.js';
 
 const redis = {
   defineCommand: () => {},
@@ -30,6 +30,7 @@ async function setup(role: 'member' | 'agent' = 'member') {
     logger: pino({ level: 'silent' }),
     redis,
     ready: async () => {},
+    photos: unusedPhotos,
     profiles: {
       get: record('get'),
       save: record('save'),

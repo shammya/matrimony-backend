@@ -46,6 +46,19 @@ const schema = z
     SESSION_TTL_SECONDS: integer(28800, 300, 86400),
     WORKER_POLL_MS: integer(1000, 100),
     EVENT_MAX_ATTEMPTS: integer(12, 1, 100),
+    // Where uploaded files (member photos) are kept. `local` is for development; `s3` works with
+    // Amazon S3 and S3-compatible stores. Switching needs these values and no code change.
+    STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+    STORAGE_LOCAL_DIR: z.string().min(1).default('./storage'),
+    S3_BUCKET: z.string().min(3).optional(),
+    S3_REGION: z.string().min(1).default('us-east-1'),
+    S3_ENDPOINT: url.optional(),
+    S3_FORCE_PATH_STYLE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+    S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   })
   .superRefine((c, ctx) => {
     const protocols: [string, string, string[]][] = [
@@ -58,6 +71,16 @@ const schema = z
       if (!allowed.includes(new URL(value).protocol))
         ctx.addIssue({ code: 'custom', path: [field], message: 'Unsupported protocol' });
     }
+    if (c.STORAGE_DRIVER === 's3') {
+      if (!c.S3_BUCKET)
+        ctx.addIssue({ code: 'custom', path: ['S3_BUCKET'], message: 'Required for s3 storage' });
+      if (Boolean(c.S3_ACCESS_KEY_ID) !== Boolean(c.S3_SECRET_ACCESS_KEY))
+        ctx.addIssue({
+          code: 'custom',
+          path: ['S3_SECRET_ACCESS_KEY'],
+          message: 'Set both access keys or neither',
+        });
+    }
     // URL SSL flags can override pg's explicit ssl object. Use only DB_SSL.
     const database = new URL(c.DATABASE_URL);
     if (['sslmode', 'sslcert', 'sslkey', 'sslrootcert'].some((k) => database.searchParams.has(k)))
@@ -67,6 +90,12 @@ const schema = z
         message: 'Configure TLS with DB_SSL, not URL flags',
       });
     if (c.NODE_ENV === 'production') {
+      if (c.STORAGE_DRIVER !== 's3')
+        ctx.addIssue({
+          code: 'custom',
+          path: ['STORAGE_DRIVER'],
+          message: 'Production needs shared storage (s3), not a local disk',
+        });
       if (c.DB_SSL !== 'verify-full')
         ctx.addIssue({ code: 'custom', path: ['DB_SSL'], message: 'Verified TLS required' });
       if (!c.REDIS_URL.startsWith('rediss:'))

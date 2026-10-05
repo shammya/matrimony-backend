@@ -23,6 +23,7 @@ tags:
   - name: Session handoff
   - name: Account
   - name: My profile
+  - name: My photos
 
 paths:
   /health/live:
@@ -332,6 +333,149 @@ paths:
             content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
           }
 
+  /api/v1/me/profile/photos:
+    get:
+      tags: [My photos]
+      summary: The member's own photos
+      description: Members only. Empty until the first upload. The profile need not exist yet.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The photos, in upload order, and the limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PhotoList' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+    post:
+      tags: [My photos]
+      summary: Upload a photo
+      description: |
+        The request body is the picture itself, not a form. Send it with its own content type
+        (image/jpeg, image/png or image/webp), at most 5 MB. The server checks the real file type,
+        removes location and camera details, and stores two WebP sizes. The photo starts as
+        waiting for review and is shown to nobody else until approved. Needs a saved profile.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        '201':
+          description: The photos, now including the new one.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PhotoList' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND: save the profile first.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PHOTO_LIMIT_REACHED, or PROFILE_STATE_INVALID for a closed profile.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '413':
+          {
+            description: 'PAYLOAD_TOO_LARGE: over 5 MB.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '415':
+          {
+            description: 'UNSUPPORTED_MEDIA_TYPE or PHOTO_TYPE_UNSUPPORTED (for example GIF or SVG).',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'PHOTO_INVALID (not a readable picture) or PHOTO_TOO_SMALL (shortest side under 200 px).',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/profile/photos/{photoId}:
+    delete:
+      tags: [My photos]
+      summary: Remove a photo
+      description: Immediate, whatever the photo's state. A review still waiting on it is cancelled, and if it was the main photo the next approved one takes its place.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The photos that remain.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PhotoList' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PHOTO_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/profile/photos/{photoId}/primary:
+    put:
+      tags: [My photos]
+      summary: Choose the main photo
+      description: Only an approved photo can be the main one. The previous main photo stops being it.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The photos, with the new main photo marked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PhotoList' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PHOTO_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PHOTO_NOT_APPROVED.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/profile/photos/{photoId}/image:
+    get:
+      tags: [My photos]
+      summary: The picture of one of the member's own photos
+      description: |
+        Returns the image itself (WebP), so the frontend requests it with the access token and
+        shows it from the response; an image tag cannot send the token. A member can see their
+        own waiting photos. Files are never public.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+        - {
+            name: size,
+            in: query,
+            schema: { type: string, enum: [thumb, full], default: full },
+            description: 'thumb is 400 px on the longest side, full is up to 1600 px.',
+          }
+      responses:
+        '200':
+          description: The picture.
+          content:
+            image/webp: { schema: { type: string, format: binary } }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PHOTO_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
 components:
   securitySchemes:
     bearerAuth:
@@ -580,7 +724,8 @@ components:
         weightKg: { type: [integer, 'null'], minimum: 20, maximum: 300 }
         complexionCode: { anyOf: [{ $ref: '#/components/schemas/Complexion' }, { type: 'null' }] }
         bloodGroup: { anyOf: [{ $ref: '#/components/schemas/BloodGroup' }, { type: 'null' }] }
-        nationalityCode: { type: string, pattern: '^[A-Z]{2}$', description: ISO country code. BD when omitted. }
+        nationalityCode:
+          { type: string, pattern: '^[A-Z]{2}$', description: ISO country code. BD when omitted. }
         religionCode: { anyOf: [{ $ref: '#/components/schemas/Religion' }, { type: 'null' }] }
         sectCode: { anyOf: [{ $ref: '#/components/schemas/Sect' }, { type: 'null' }] }
         currentCity: { type: [string, 'null'], maxLength: 100 }
@@ -736,6 +881,31 @@ components:
       properties:
         version: { type: integer, minimum: 1 }
 
+    PhotoState:
+      type: string
+      enum: [waiting, approved, rejected]
+      description: Waiting for a reviewer, approved (shown to others) or rejected.
+    Photo:
+      type: object
+      required: [id, state, isPrimary, createdAt, reviewerNotes]
+      properties:
+        id: { type: string, format: uuid }
+        state: { $ref: '#/components/schemas/PhotoState' }
+        isPrimary:
+          { type: boolean, description: The photo shown first. Only an approved photo can be it. }
+        createdAt: { type: string, format: date-time }
+        reviewerNotes:
+          { type: [string, 'null'], description: The reviewer's note when the photo was rejected. }
+    PhotoList:
+      type: object
+      required: [photos, limit]
+      properties:
+        photos:
+          type: array
+          description: In the order the member uploaded them. Removed photos are not listed.
+          items: { $ref: '#/components/schemas/Photo' }
+        limit: { type: integer, description: How many photos a member may have at once. }
+
     Error:
       type: object
       required: [error]
@@ -755,7 +925,10 @@ components:
                 INVALID_REQUEST, RATE_LIMITED, REQUEST_REJECTED, INTERNAL_ERROR, and for My profile:
                 PROFILE_NOT_FOUND, PROFILE_VERSION_CONFLICT, PROFILE_LOCKED,
                 PROFILE_EDIT_REQUIRES_REVIEW, PROFILE_STATE_INVALID, PROFILE_INCOMPLETE,
-                NO_PENDING_REVIEW, NO_CHANGES, MEMBER_CODE_UNAVAILABLE.
+                NO_PENDING_REVIEW, NO_CHANGES, MEMBER_CODE_UNAVAILABLE, and for photos:
+                PHOTO_NOT_FOUND, PHOTO_LIMIT_REACHED, PHOTO_NOT_APPROVED, PHOTO_INVALID,
+                PHOTO_TYPE_UNSUPPORTED, PHOTO_TOO_SMALL, PAYLOAD_TOO_LARGE,
+                UNSUPPORTED_MEDIA_TYPE.
             details:
               type: object
               description: |

@@ -19,6 +19,12 @@ import type { EventDocument } from './mongo/entity/workflow-event.js';
 import { ProfileRepository } from './db/raw/repository/profile-repository.js';
 import { ProfileDbService } from './db/service/profile-db-service.js';
 import { ProfileService } from './service/profile-service.js';
+import { PhotoRepository } from './db/raw/repository/photo-repository.js';
+import { PhotoDbService } from './db/service/photo-db-service.js';
+import { PhotoService } from './service/photo-service.js';
+import { PhotoProcess } from './process/photo-process.js';
+import { processImage } from './security/image-processor.js';
+import { createFileStorage } from './storage/config/storage.js';
 import { EventDeliveryProcess } from './process/event-delivery-process.js';
 export async function createApiContainer(config: AppConfig, logger: Logger) {
   const db = createDatabase(config, logger);
@@ -53,6 +59,12 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       redis,
       identities,
       auth,
+      photos: new PhotoProcess(
+        new PhotoService(new PhotoDbService(db, new PhotoRepository(), new EventRepository())),
+        createFileStorage(config),
+        processImage,
+        logger,
+      ),
       profiles: new ProfileService(
         new ProfileDbService(db, new ProfileRepository(), new EventRepository()),
       ),

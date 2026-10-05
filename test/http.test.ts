@@ -4,7 +4,7 @@ import { pino } from 'pino';
 import type { Redis } from 'ioredis';
 import { buildApp } from '../src/controller/app.js';
 import { AppError } from '../src/exception/app-error.js';
-import { config, account, agency, unusedProfiles } from './fixtures.js';
+import { config, account, agency, unusedPhotos, unusedProfiles } from './fixtures.js';
 await test('HTTP routes default to JWT protection, enforce roles, and expose safe responses', async (t) => {
   const redis = {
     defineCommand: () => {},
@@ -19,6 +19,7 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
     redis,
     ready: async () => {},
     profiles: unusedProfiles,
+    photos: unusedPhotos,
     identities: {
       tenant: async (host) => {
         if (host !== 'localhost') throw new AppError(404, 'TENANT_NOT_FOUND');

@@ -14,6 +14,8 @@ import { accountResponse } from '../factory/account-response.js';
 import { AppError } from '../exception/app-error.js';
 import { registerAuthController } from './auth-controller.js';
 import { registerProfileController } from './profile-controller.js';
+import { registerPhotoController } from './photo-controller.js';
+import type { PhotoProcess } from '../process/photo-process.js';
 import { fieldProblems } from '../io/http/validation.js';
 import type { ProfileService } from '../service/profile-service.js';
 import './context.js';
@@ -26,6 +28,7 @@ export interface AppDependencies {
     'begin' | 'complete' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'
   >;
   identities: Pick<IdentityService, 'tenant'>;
+  photos: Pick<PhotoProcess, 'list' | 'upload' | 'remove' | 'makePrimary' | 'image'>;
   profiles: Pick<ProfileService, 'get' | 'save' | 'submit' | 'requestEdit' | 'cancelPending'>;
   ready: () => Promise<void>;
 }
@@ -88,11 +91,15 @@ export async function buildApp(deps: AppDependencies) {
       ? error.code
       : status === 400
         ? 'INVALID_REQUEST'
-        : status === 429
-          ? 'RATE_LIMITED'
-          : status < 500
-            ? 'REQUEST_REJECTED'
-            : 'INTERNAL_ERROR';
+        : status === 413
+          ? 'PAYLOAD_TOO_LARGE'
+          : status === 415
+            ? 'UNSUPPORTED_MEDIA_TYPE'
+            : status === 429
+              ? 'RATE_LIMITED'
+              : status < 500
+                ? 'REQUEST_REJECTED'
+                : 'INTERNAL_ERROR';
     if (status >= 500)
       req.log.error(
         { code, errorType: error instanceof Error ? error.name : 'Unknown' },
@@ -136,5 +143,6 @@ export async function buildApp(deps: AppDependencies) {
   );
   registerAuthController(app, deps.auth, config);
   registerProfileController(app, deps.profiles);
+  registerPhotoController(app, deps.photos);
   return app;
 }

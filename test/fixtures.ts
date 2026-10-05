@@ -33,3 +33,12 @@ export const unusedProfiles = {
   requestEdit: unused,
   cancelPending: unused,
 };
+
+/** A photo process that must not be reached, for tests about other routes. */
+export const unusedPhotos = {
+  list: unused,
+  upload: unused,
+  remove: unused,
+  makePrimary: unused,
+  image: unused,
+};
