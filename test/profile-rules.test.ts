@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ageOn,
+  applyChanges,
+  describeChanges,
+  describeContent,
   diffProfileData,
   isEmptyChange,
   missingRequired,
@@ -230,4 +233,68 @@ await test('clearing a field is a change, and the same list in a different order
 await test('member codes look like M plus seven digits', () => {
   for (let i = 0; i < 50; i += 1) assert.match(newMemberCode(), /^M\d{7}$/);
   assert.notEqual(newMemberCode(), newMemberCode());
+});
+
+// A draft with only a name: every other answer is empty.
+const emptyData = (): ProfileData => {
+  const draft = schema.parse({ profile: { fullName: 'Name' } });
+  return { profile: draft.profile, contact: draft.contact, preferences: draft.preferences };
+};
+
+await test('approving a change request produces the published content with only those fields changed', () => {
+  const current = emptyData();
+  current.profile.heightCm = 172;
+  current.profile.aboutMe = 'Before';
+  current.contact.phone = '+8801712345678';
+  current.preferences.districtCodes = ['dhaka'];
+
+  const merged = applyChanges(current, {
+    profile: { heightCm: 180 },
+    preferences: { districtCodes: ['dhaka', 'sylhet'] },
+  });
+  assert.equal(merged.profile.heightCm, 180);
+  assert.equal(merged.profile.aboutMe, 'Before', 'untouched fields stay');
+  assert.equal(merged.contact.phone, '+8801712345678');
+  assert.deepEqual(merged.preferences.districtCodes, ['dhaka', 'sylhet']);
+  // The published content itself is not changed in place.
+  assert.equal(current.profile.heightCm, 172);
+  assert.deepEqual(applyChanges(current, {}), current);
+});
+
+await test('a change can empty an optional field', () => {
+  const current = emptyData();
+  current.profile.aboutMe = 'Something';
+  assert.equal(applyChanges(current, { profile: { aboutMe: null } }).profile.aboutMe, null);
+});
+
+await test('the reviewer is shown each changed field with its old and new value', () => {
+  const current = emptyData();
+  current.profile.heightCm = 172;
+  current.contact.email = 'a@example.com';
+  assert.deepEqual(
+    describeChanges(current, {
+      profile: { heightCm: 180, aboutMe: 'Hello' },
+      contact: { email: null },
+    }),
+    [
+      { path: 'profile.heightCm', before: 172, after: 180 },
+      { path: 'profile.aboutMe', before: null, after: 'Hello' },
+      { path: 'contact.email', before: 'a@example.com', after: null },
+    ],
+  );
+  assert.deepEqual(describeChanges(current, {}), []);
+});
+
+await test('a first submission is shown as everything that is filled in, and nothing that is empty', () => {
+  const data = emptyData();
+  data.profile.fullName = 'Rahim';
+  data.profile.heightCm = 172;
+  data.preferences.religionCodes = ['islam'];
+  const paths = describeContent(data).map((change) => change.path);
+  assert.ok(paths.includes('profile.fullName'));
+  assert.ok(paths.includes('profile.heightCm'));
+  assert.ok(paths.includes('preferences.religionCodes'));
+  assert.ok(!paths.includes('profile.aboutMe'), 'empty text is left out');
+  assert.ok(!paths.includes('preferences.districtCodes'), 'an empty list is left out');
+  for (const change of describeContent(data)) assert.equal(change.before, null);
 });

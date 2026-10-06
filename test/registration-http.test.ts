@@ -4,7 +4,14 @@ import { pino } from 'pino';
 import type { Redis } from 'ioredis';
 import type { Registration } from '../src/bo/registration.js';
 import { buildApp } from '../src/controller/app.js';
-import { agency, config, unusedPhotos, unusedProfiles } from './fixtures.js';
+import {
+  agency,
+  config,
+  unusedPhotos,
+  unusedReviews,
+  unusedClients,
+  unusedProfiles,
+} from './fixtures.js';
 
 const redis = {
   defineCommand: () => {},
@@ -32,6 +39,8 @@ async function setup() {
     ready: async () => {},
     profiles: unusedProfiles,
     photos: unusedPhotos,
+    reviews: unusedReviews,
+    clients: unusedClients,
     identities: {
       tenant: async () => ({
         id: agency,

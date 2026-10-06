@@ -39,6 +39,47 @@ export class ProfileRepository {
     return mapProfile(row, contact.rows[0], preferences.rows[0]);
   }
 
+  async findById(
+    tx: Transaction,
+    agencyId: string,
+    profileId: string,
+    lock: boolean,
+  ): Promise<ProfileRecord | null> {
+    const found = await tx.query(lock ? profileQueries.byIdForUpdate : profileQueries.byId, [
+      agencyId,
+      profileId,
+    ]);
+    const row = found.rows[0];
+    if (!row) return null;
+    const [contact, preferences] = await Promise.all([
+      tx.query(profileQueries.contact, [agencyId, row.id]),
+      tx.query(profileQueries.preferences, [agencyId, row.id]),
+    ]);
+    return mapProfile(row, contact.rows[0], preferences.rows[0]);
+  }
+
+  /** Inserts a draft for an assisted client. Null when the member code is already taken. */
+  async createClient(
+    tx: Transaction,
+    agencyId: string,
+    createdBy: string,
+    assignedAgentId: string | null,
+    memberCode: string,
+    data: ProfileData,
+  ): Promise<string | null> {
+    const result = await tx.query(profileQueries.insertClient, [
+      agencyId,
+      memberCode,
+      createdBy,
+      assignedAgentId,
+      divisionFor(data),
+      ...valuesFor(PROFILE_COLUMNS, data.profile),
+    ]);
+    const id = (result.rows[0] as { id: string } | undefined)?.id ?? null;
+    if (id) await this.saveChildren(tx, agencyId, id, data);
+    return id;
+  }
+
   /** Inserts a new draft. False when the owner already has a profile or the member code is taken. */
   async create(
     tx: Transaction,

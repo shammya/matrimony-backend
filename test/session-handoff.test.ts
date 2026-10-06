@@ -4,7 +4,14 @@ import { pino } from 'pino';
 import type { Redis } from 'ioredis';
 import { buildApp, type AppDependencies } from '../src/controller/app.js';
 import { AppError } from '../src/exception/app-error.js';
-import { config, agency, unusedPhotos, unusedProfiles } from './fixtures.js';
+import {
+  config,
+  agency,
+  unusedPhotos,
+  unusedReviews,
+  unusedClients,
+  unusedProfiles,
+} from './fixtures.js';
 
 const sessionId = 'a'.repeat(43);
 const challengeId = 'b'.repeat(43);
@@ -28,6 +35,8 @@ async function build(
     ready: async () => {},
     profiles: unusedProfiles,
     photos: unusedPhotos,
+    reviews: unusedReviews,
+    clients: unusedClients,
     identities: {
       tenant: async (host) => {
         if (host !== 'localhost') throw new AppError(404, 'TENANT_NOT_FOUND');

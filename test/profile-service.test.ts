@@ -1,10 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import type { WorkflowEvent } from '../src/bo/event.js';
-import { profileInputSchema, type ProfileData } from '../src/bo/profile.js';
-import type { ProfileRecord, ReviewKind, ReviewRecord } from '../src/bo/profile-state.js';
-import type { ProfileUnit } from '../src/db/service/profile-db-service.js';
+import { profileInputSchema } from '../src/bo/profile.js';
 import {
   CONTACT_COLUMNS,
   PREFERENCE_COLUMNS,
@@ -13,6 +10,7 @@ import {
 import { AppError } from '../src/exception/app-error.js';
 import { ProfileService, type ProfileActor } from '../src/service/profile-service.js';
 import { agency, otherAgency } from './fixtures.js';
+import { FakeStore } from './fake-profile-store.js';
 
 const schema = profileInputSchema(new Date(Date.UTC(2026, 9, 6)));
 const parse = (input: unknown) => schema.parse(input);
@@ -34,143 +32,6 @@ const completeInput = (version?: number, profile: Record<string, unknown> = {}, 
     profile: { ...completeProfile, ...profile },
     contact: { phone: '+8801712345678', ...contact },
   });
-
-/** An in-memory stand-in for one transaction's worth of profile storage. */
-class FakeStore {
-  profiles = new Map<string, ProfileRecord & { agencyId: string; ownerId: string }>();
-  reviews: (ReviewRecord & { profileId: string })[] = [];
-  events: WorkflowEvent[] = [];
-  /** Make the next create() lose a race with another request for the same member. */
-  raceOnNextCreate = false;
-  /** Member codes that are already taken. */
-  takenCodes = new Set<string>();
-  createCalls = 0;
-
-  db = {
-    inTransaction: <T>(_agencyId: string, work: (unit: ProfileUnit) => Promise<T>) =>
-      work(this.unit()),
-    read: (agencyId: string, ownerId: string) =>
-      this.unit()
-        .findByOwner(agencyId, ownerId, false)
-        .then(async (profile) => ({
-          profile,
-          pendingReview: profile ? await this.unit().pendingReview(agencyId, profile.id) : null,
-          lastDecision: profile ? await this.unit().lastDecision(agencyId, profile.id) : null,
-        })),
-  };
-
-  private bump(profile: { version: number; updatedAt: string }) {
-    profile.version += 1;
-    profile.updatedAt = new Date().toISOString();
-  }
-
-  private find(agencyId: string, ownerId: string) {
-    return [...this.profiles.values()].find(
-      (p) => p.agencyId === agencyId && p.ownerId === ownerId,
-    );
-  }
-
-  unit(): ProfileUnit {
-    return {
-      findByOwner: async (agencyId, ownerId) => {
-        const found = this.find(agencyId, ownerId);
-        return found ? structuredClone(found) : null;
-      },
-      create: async (agencyId, ownerId, memberCode, data) => {
-        this.createCalls += 1;
-        if (this.raceOnNextCreate) {
-          this.raceOnNextCreate = false;
-          this.insert(agencyId, ownerId, `M${randomUUID().slice(0, 7)}`, data);
-          return null;
-        }
-        if (this.find(agencyId, ownerId) || this.takenCodes.has(memberCode)) return null;
-        return this.insert(agencyId, ownerId, memberCode, data);
-      },
-      saveContent: async (agencyId, profileId, status, data) => {
-        const profile = this.byId(agencyId, profileId);
-        profile.status = status;
-        profile.data = structuredClone(data);
-        this.bump(profile);
-      },
-      setStatus: async (agencyId, profileId, status) => {
-        const profile = this.byId(agencyId, profileId);
-        profile.status = status;
-        this.bump(profile);
-      },
-      insertReview: async (_agencyId, profileId, _by, kind: ReviewKind, baseVersion, changes) => {
-        const review = {
-          id: randomUUID(),
-          profileId,
-          kind,
-          status: 'pending' as const,
-          baseProfileVersion: baseVersion,
-          proposedChanges: structuredClone(changes) as ReviewRecord['proposedChanges'],
-          reviewerNotes: null,
-          reviewedAt: null,
-          createdAt: new Date().toISOString(),
-        };
-        this.reviews.push(review);
-        return review;
-      },
-      pendingReview: async (_agencyId, profileId) =>
-        this.reviews.find((r) => r.profileId === profileId && r.status === 'pending') ?? null,
-      cancelReview: async (_agencyId, reviewId) => {
-        const review = this.reviews.find((r) => r.id === reviewId && r.status === 'pending');
-        if (review) review.status = 'cancelled';
-      },
-      lastDecision: async (_agencyId, profileId) =>
-        [...this.reviews]
-          .reverse()
-          .find(
-            (r) =>
-              r.profileId === profileId && (r.status === 'approved' || r.status === 'rejected'),
-          ) ?? null,
-      appendEvent: async (event) => {
-        this.events.push(event);
-      },
-    };
-  }
-
-  private insert(agencyId: string, ownerId: string, memberCode: string, data: ProfileData) {
-    const id = randomUUID();
-    this.profiles.set(id, {
-      agencyId,
-      ownerId,
-      id,
-      memberCode,
-      status: 'draft',
-      version: 1,
-      currentDivisionCode: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      data: structuredClone(data),
-    });
-    return id;
-  }
-
-  private byId(agencyId: string, id: string) {
-    const profile = this.profiles.get(id);
-    assert.ok(profile && profile.agencyId === agencyId, 'profile belongs to the agency');
-    return profile;
-  }
-
-  /** Play the reviewer, which is not built yet: approve or reject what is waiting. */
-  decide(ownerId: string, outcome: 'approved' | 'rejected', notes: string | null = null) {
-    const profile = this.find(agency, ownerId)!;
-    const review = this.reviews.find((r) => r.profileId === profile.id && r.status === 'pending')!;
-    review.status = outcome;
-    review.reviewerNotes = notes;
-    review.reviewedAt = new Date().toISOString();
-    if (review.kind === 'initial_submission') {
-      profile.status = outcome === 'approved' ? 'active' : 'rejected';
-      this.bump(profile);
-    }
-  }
-
-  setStatus(ownerId: string, status: ProfileRecord['status']) {
-    this.find(agency, ownerId)!.status = status;
-  }
-}
 
 function setup(memberCode?: () => string) {
   const store = new FakeStore();

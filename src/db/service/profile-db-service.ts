@@ -18,6 +18,15 @@ import type { ProfileRepository } from '../raw/repository/profile-repository.js'
 export interface ProfileUnit {
   /** `lock` holds the row until the transaction ends, for anything that changes it. */
   findByOwner(agencyId: string, ownerId: string, lock: boolean): Promise<ProfileRecord | null>;
+  findById(agencyId: string, profileId: string, lock: boolean): Promise<ProfileRecord | null>;
+  /** The new client's id, or null when the member code is taken. */
+  createClient(
+    agencyId: string,
+    createdBy: string,
+    assignedAgentId: string | null,
+    memberCode: string,
+    data: ProfileData,
+  ): Promise<string | null>;
   /** The new profile's id, or null when the owner already has one or the code is taken. */
   create(
     agencyId: string,
@@ -62,6 +71,9 @@ export class ProfileDbService {
     const repo = this.repository;
     return {
       findByOwner: (agencyId, ownerId, lock) => repo.findByOwner(tx, agencyId, ownerId, lock),
+      findById: (agencyId, profileId, lock) => repo.findById(tx, agencyId, profileId, lock),
+      createClient: (agencyId, createdBy, assignedAgentId, memberCode, data) =>
+        repo.createClient(tx, agencyId, createdBy, assignedAgentId, memberCode, data),
       create: (agencyId, ownerId, memberCode, data) =>
         repo.create(tx, agencyId, ownerId, memberCode, data),
       saveContent: (agencyId, profileId, status, data) =>

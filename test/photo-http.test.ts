@@ -7,7 +7,14 @@ import { MAX_UPLOAD_BYTES, type PhotoList } from '../src/bo/photo.js';
 import { buildApp } from '../src/controller/app.js';
 import { AppError } from '../src/exception/app-error.js';
 import type { ProfileActor } from '../src/service/profile-service.js';
-import { account, agency, config, unusedProfiles } from './fixtures.js';
+import {
+  account,
+  agency,
+  config,
+  unusedClients,
+  unusedProfiles,
+  unusedReviews,
+} from './fixtures.js';
 
 const redis = {
   defineCommand: () => {},
@@ -39,6 +46,8 @@ async function setup(role: 'member' | 'agent' = 'member') {
     redis,
     ready: async () => {},
     profiles: unusedProfiles,
+    reviews: unusedReviews,
+    clients: unusedClients,
     photos: {
       list: record('list'),
       upload: record('upload'),

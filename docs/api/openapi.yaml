@@ -25,6 +25,8 @@ tags:
   - name: Account
   - name: My profile
   - name: My photos
+  - name: Review queue
+  - name: Clients
 
 paths:
   /health/live:
@@ -506,6 +508,501 @@ paths:
             description: 'PHOTO_NOT_FOUND.',
             content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
           }
+  /api/v1/reviews:
+    get:
+      tags: [Review queue]
+      summary: The approval queue
+      description: |
+        Admins and agents. Waiting requests are listed oldest first, decided ones newest first.
+        An admin sees every request. An agent sees those for clients assigned to them and for
+        profiles nobody has been assigned to yet.
+      security:
+        - bearerAuth: []
+      parameters:
+        - {
+            name: status,
+            in: query,
+            schema: { $ref: '#/components/schemas/QueueStatus' },
+            description: Default pending.,
+          }
+        - { name: kind, in: query, schema: { $ref: '#/components/schemas/QueueKind' } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 50, default: 20 },
+          }
+        - {
+            name: after,
+            in: query,
+            schema: { type: string },
+            description: The `next` of the previous page.,
+          }
+      responses:
+        '200':
+          description: One page of the queue.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueuePage' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+  /api/v1/reviews/summary:
+    get:
+      tags: [Review queue]
+      summary: How many requests are waiting for this reviewer
+      description: For the badge in the navigation. Counted the same way the queue is listed.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The number waiting.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueueSummary' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+  /api/v1/reviews/{reviewId}:
+    get:
+      tags: [Review queue]
+      summary: One request, with what it would change
+      description: |
+        A first submission lists everything filled in. A change request lists each changed field
+        with its published and proposed value. `canDecide` and `blockedBy` say whether this
+        reviewer may decide it now. A request an agent may not see is reported as not found.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewDetail' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'REVIEW_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/reviews/{reviewId}/photo:
+    get:
+      tags: [Review queue]
+      summary: The photo a request is about
+      description: The image itself (WebP), requested with the access token. Only for a photo request the reviewer may see.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: size, in: query, schema: { type: string, enum: [thumb, full], default: full } }
+      responses:
+        '200':
+          description: The picture.
+          content:
+            image/webp: { schema: { type: string, format: binary } }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'REVIEW_NOT_FOUND or PHOTO_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/reviews/{reviewId}/approve:
+    post:
+      tags: [Review queue]
+      summary: Approve a request
+      description: |
+        A first submission publishes the profile. A change request is applied to it. A photo
+        becomes visible, and the main photo if there is none yet. Refused if the profile changed
+        since the request was made, or since the version the reviewer saw. Nobody approves their
+        own submission, except an admin.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApproveInput' }
+      responses:
+        '200':
+          description: The request, now approved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'REVIEW_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED, REVIEW_OUT_OF_DATE or REVIEW_OWN_SUBMISSION.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'PROFILE_INCOMPLETE: applying it would leave a required field empty.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/reviews/{reviewId}/reject:
+    post:
+      tags: [Review queue]
+      summary: Reject a request
+      description: |
+        Needs a reason, which the member sees. A rejected first submission goes back to the member
+        as "needs changes". A rejected change request leaves the published profile as it was. A
+        rejected photo stays with its owner, unpublished.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RejectInput' }
+      responses:
+        '200':
+          description: The request, now rejected.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'REVIEW_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED, REVIEW_OUT_OF_DATE or REVIEW_OWN_SUBMISSION.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients:
+    get:
+      tags: [Clients]
+      summary: The clients, most recently changed first
+      description: |
+        An admin sees every profile of the agency; an agent only those assigned to them, whatever
+        they ask for. `assignedTo` is an admin's filter.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ProfileStatus' } }
+        - { name: serviceMode, in: query, schema: { $ref: '#/components/schemas/ServiceMode' } }
+        - {
+            name: assignedTo,
+            in: query,
+            schema: { type: string },
+            description: "Admin only: an agent's id, or none for clients nobody looks after.",
+          }
+        - {
+            name: q,
+            in: query,
+            schema: { type: string, maxLength: 100 },
+            description: Part of a name or member code.,
+          }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 50, default: 20 },
+          }
+        - { name: after, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: One page of clients.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientPage' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+    post:
+      tags: [Clients]
+      summary: Create an assisted client
+      description: |
+        A draft profile for someone who has no login. It belongs to the agency, is created by this
+        staff member and is assigned to an agent: an agent's client is always theirs, an admin may
+        name an agent or leave it unassigned. It goes through review like any profile.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '201':
+          description: The new client.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '422':
+          {
+            description: 'AGENT_NOT_AVAILABLE: the agent is not an active admin or agent of this agency.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}:
+    get:
+      tags: [Clients]
+      summary: A client's profile and who looks after it
+      description: A profile the staff member may not manage is reported as not found.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The profile, its waiting review, and the client details.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+    put:
+      tags: [Clients]
+      summary: Save an assisted client's draft
+      description: Same rules as a member's own draft. Not for a member who runs their own profile.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '200':
+          description: The saved state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403':
+          {
+            description: "PROFILE_SELF_SERVICE: staff do not edit a member's own profile.",
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_VERSION_CONFLICT, PROFILE_LOCKED or PROFILE_EDIT_REQUIRES_REVIEW.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/submit:
+    post:
+      tags: [Clients]
+      summary: Send an assisted client's draft for review
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileSubmit' }
+      responses:
+        '200':
+          description: The profile is now pending review.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403':
+          {
+            description: 'PROFILE_SELF_SERVICE.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_VERSION_CONFLICT, PROFILE_LOCKED or PROFILE_STATE_INVALID.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'PROFILE_INCOMPLETE, with details.fields listing what is missing.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/edit-requests:
+    post:
+      tags: [Clients]
+      summary: Ask for changes to a published assisted client
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '200':
+          description: The state with a waiting field update.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403':
+          {
+            description: 'PROFILE_SELF_SERVICE.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_VERSION_CONFLICT, PROFILE_LOCKED or PROFILE_STATE_INVALID.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'NO_CHANGES or PROFILE_INCOMPLETE.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/pending-review:
+    delete:
+      tags: [Clients]
+      summary: Withdraw the waiting review of an assisted client
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The state after withdrawing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403':
+          {
+            description: 'PROFILE_SELF_SERVICE.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND or NO_PENDING_REVIEW.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/status:
+    post:
+      tags: [Clients]
+      summary: Pause, reactivate, match or close a profile
+      description: |
+        Moves a profile between its live states: active to paused, matched or closed; paused or
+        matched back to active or to closed. A profile waiting for review cannot be moved. Closed is
+        final. Works for a member's own profile too, since it changes whether the profile is shown,
+        not what it says.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusChange' }
+      responses:
+        '200':
+          description: The profile in its new state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_VERSION_CONFLICT or STATUS_CHANGE_NOT_ALLOWED.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/assignment:
+    put:
+      tags: [Clients]
+      summary: Hand a profile to an agent
+      description: Admins only. Changing who looks after a profile does not make a waiting request out of date.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssignmentInput' }
+      responses:
+        '200':
+          description: The profile with its new agent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'AGENT_NOT_AVAILABLE.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/admin/staff:
+    get:
+      tags: [Clients]
+      summary: The staff clients can be handed to
+      description: Admins only.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Admins and agents of this agency.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffList' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
 components:
   securitySchemes:
     bearerAuth:
@@ -969,6 +1466,234 @@ components:
           items: { $ref: '#/components/schemas/Photo' }
         limit: { type: integer, description: How many photos a member may have at once. }
 
+    StaffRef:
+      type: object
+      required: [id, displayName]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+    QueueKind:
+      type: string
+      enum: [initial_submission, field_update, photo_add]
+      description: A new profile, a change to a published profile, or a new photo.
+    QueueStatus:
+      type: string
+      enum: [pending, approved, rejected, cancelled]
+    ServiceMode:
+      type: string
+      enum: [self_service, assisted]
+      description: A member who runs their own profile, or a client whose profile the agency runs.
+    QueueItem:
+      type: object
+      required: [id, kind, status, createdAt, profile, submittedBy, photoId]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/QueueKind' }
+        status: { $ref: '#/components/schemas/QueueStatus' }
+        createdAt: { type: string, format: date-time }
+        profile:
+          type: object
+          required: [id, memberCode, fullName, serviceMode, assignedAgentId]
+          properties:
+            id: { type: string, format: uuid }
+            memberCode: { type: string }
+            fullName: { type: string }
+            serviceMode: { $ref: '#/components/schemas/ServiceMode' }
+            assignedAgentId: { type: [string, 'null'], format: uuid }
+        submittedBy: { $ref: '#/components/schemas/StaffRef' }
+        photoId: { type: [string, 'null'], format: uuid, description: Set for a photo request. }
+    QueuePage:
+      type: object
+      required: [items, next]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/QueueItem' }
+        next:
+          {
+            type: [string, 'null'],
+            description: Pass as `after` for the next page. Null on the last page.,
+          }
+    FieldChange:
+      type: object
+      required: [path, before, after]
+      properties:
+        path:
+          {
+            type: string,
+            description: For example profile.heightCm. Fields are named as in ProfileInput.,
+          }
+        before:
+          {
+            description: The published value,
+            or null when nothing was published or the field was empty.,
+          }
+        after: { description: The proposed value. }
+    ReviewDetail:
+      allOf:
+        - { $ref: '#/components/schemas/QueueItem' }
+        - type: object
+          required:
+            [
+              baseProfileVersion,
+              reviewerNotes,
+              reviewedAt,
+              decidedBy,
+              profileStatus,
+              profileVersion,
+              changes,
+              stale,
+              canDecide,
+              blockedBy,
+            ]
+          properties:
+            baseProfileVersion:
+              {
+                type: [integer, 'null'],
+                description: The profile version the request was made against.,
+              }
+            reviewerNotes: { type: [string, 'null'] }
+            reviewedAt: { type: [string, 'null'], format: date-time }
+            decidedBy: { anyOf: [{ $ref: '#/components/schemas/StaffRef' }, { type: 'null' }] }
+            profileStatus: { type: string }
+            profileVersion: { type: integer, description: The version to send back when approving. }
+            changes:
+              type: array
+              description: What the reviewer is asked to look at. Empty for a photo.
+              items: { $ref: '#/components/schemas/FieldChange' }
+            stale:
+              {
+                type: boolean,
+                description: The profile changed after the request was made,
+                so it can no longer be approved.,
+              }
+            canDecide: { type: boolean }
+            blockedBy:
+              description: Why it cannot be decided now.
+              anyOf:
+                - { type: string, enum: [decided, cancelled, stale, own_submission] }
+                - { type: 'null' }
+    ApproveInput:
+      type: object
+      additionalProperties: false
+      properties:
+        note: { type: string, maxLength: 1000 }
+        profileVersion:
+          {
+            type: integer,
+            minimum: 1,
+            description: The version the reviewer looked at. If the profile moved on,
+            the approval is refused.,
+          }
+    RejectInput:
+      type: object
+      additionalProperties: false
+      required: [note]
+      properties:
+        note: { type: string, minLength: 1, maxLength: 1000, description: Why. The member sees it. }
+    QueueSummary:
+      type: object
+      required: [pending]
+      properties:
+        pending: { type: integer }
+    ClientListItem:
+      type: object
+      required:
+        [
+          id,
+          memberCode,
+          fullName,
+          status,
+          serviceMode,
+          version,
+          updatedAt,
+          assignedAgent,
+          districtCode,
+          hasPendingReview,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        memberCode: { type: string }
+        fullName: { type: string }
+        status: { $ref: '#/components/schemas/ProfileStatus' }
+        serviceMode: { $ref: '#/components/schemas/ServiceMode' }
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        assignedAgent: { anyOf: [{ $ref: '#/components/schemas/StaffRef' }, { type: 'null' }] }
+        districtCode: { type: [string, 'null'] }
+        hasPendingReview: { type: boolean }
+    ClientPage:
+      type: object
+      required: [items, next]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ClientListItem' }
+        next: { type: [string, 'null'] }
+    ClientMeta:
+      type: object
+      required: [serviceMode, assignedAgent, owner]
+      properties:
+        serviceMode: { $ref: '#/components/schemas/ServiceMode' }
+        assignedAgent: { anyOf: [{ $ref: '#/components/schemas/StaffRef' }, { type: 'null' }] }
+        owner:
+          {
+            anyOf: [{ $ref: '#/components/schemas/StaffRef' }, { type: 'null' }],
+            description: The member who runs a self-service profile. Null for an assisted client.,
+          }
+    ClientDetail:
+      allOf:
+        - { $ref: '#/components/schemas/OwnProfileState' }
+        - type: object
+          required: [client]
+          properties:
+            client: { $ref: '#/components/schemas/ClientMeta' }
+    ClientInput:
+      allOf:
+        - { $ref: '#/components/schemas/ProfileInput' }
+        - type: object
+          properties:
+            assignedAgentId:
+              {
+                type: [string, 'null'],
+                format: uuid,
+                description: "On creation, admins only: who looks after the client. An agent's new client is always theirs.",
+              }
+    StatusChange:
+      type: object
+      additionalProperties: false
+      required: [status, version]
+      properties:
+        status: { type: string, enum: [active, paused, matched, closed] }
+        version: { type: integer, minimum: 1, description: The profile version last seen. }
+    AssignmentInput:
+      type: object
+      additionalProperties: false
+      required: [agentId]
+      properties:
+        agentId:
+          {
+            type: [string, 'null'],
+            format: uuid,
+            description: An active admin or agent,
+            or null for nobody.,
+          }
+    StaffMember:
+      type: object
+      required: [id, displayName, role, status]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        role: { type: string, enum: [admin, agent] }
+        status: { type: string, enum: [invited, active, disabled] }
+    StaffList:
+      type: object
+      required: [staff]
+      properties:
+        staff:
+          type: array
+          items: { $ref: '#/components/schemas/StaffMember' }
+
     Error:
       type: object
       required: [error]
@@ -993,7 +1718,10 @@ components:
                 PHOTO_TYPE_UNSUPPORTED, PHOTO_TOO_SMALL, PAYLOAD_TOO_LARGE,
                 UNSUPPORTED_MEDIA_TYPE, and for registration: ACCOUNT_NOT_FOUND (a login for
                 someone with no account yet), PHONE_ALREADY_REGISTERED (the number belongs to a
-                different sign-in), REGISTRATION_PHONE_REQUIRED (the provider did not verify a phone).
+                different sign-in), REGISTRATION_PHONE_REQUIRED (the provider did not verify a phone), and
+                for staff: REVIEW_NOT_FOUND, REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED,
+                REVIEW_OUT_OF_DATE, REVIEW_OWN_SUBMISSION, PROFILE_SELF_SERVICE,
+                STATUS_CHANGE_NOT_ALLOWED, AGENT_NOT_AVAILABLE.
             details:
               type: object
               description: |

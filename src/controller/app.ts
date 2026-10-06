@@ -15,12 +15,30 @@ import { AppError } from '../exception/app-error.js';
 import { registerAuthController } from './auth-controller.js';
 import { registerProfileController } from './profile-controller.js';
 import { registerPhotoController } from './photo-controller.js';
+import { registerReviewController } from './review-controller.js';
+import { registerClientController } from './client-controller.js';
+import type { ReviewProcess } from '../process/review-process.js';
+import type { ClientService } from '../service/client-service.js';
 import { registerDevSmsSink, type DevSmsSink } from './dev-sms-controller.js';
 import type { PhotoProcess } from '../process/photo-process.js';
 import { fieldProblems } from '../io/http/validation.js';
 import type { ProfileService } from '../service/profile-service.js';
 import './context.js';
 export interface AppDependencies {
+  reviews: Pick<ReviewProcess, 'list' | 'pendingCount' | 'detail' | 'approve' | 'reject' | 'photo'>;
+  clients: Pick<
+    ClientService,
+    | 'list'
+    | 'detail'
+    | 'create'
+    | 'save'
+    | 'submit'
+    | 'requestEdit'
+    | 'cancelPending'
+    | 'changeStatus'
+    | 'assign'
+    | 'listStaff'
+  >;
   /** Development only: prints the sign-in code the identity provider would have texted. */
   devSms?: DevSmsSink;
   config: AppConfig;
@@ -147,6 +165,8 @@ export async function buildApp(deps: AppDependencies) {
   registerAuthController(app, deps.auth, config);
   registerProfileController(app, deps.profiles);
   registerPhotoController(app, deps.photos);
+  registerReviewController(app, deps.reviews);
+  registerClientController(app, deps.clients);
   if (deps.devSms && config.NODE_ENV !== 'production') registerDevSmsSink(app, deps.devSms);
   return app;
 }

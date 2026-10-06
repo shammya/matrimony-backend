@@ -28,6 +28,13 @@ import { createFileStorage } from './storage/config/storage.js';
 import { RegistrationRepository } from './db/raw/repository/registration-repository.js';
 import { RegistrationDbService } from './db/service/registration-db-service.js';
 import { RegistrationService } from './service/registration-service.js';
+import { ReviewRepository } from './db/raw/repository/review-repository.js';
+import { ReviewDbService } from './db/service/review-db-service.js';
+import { ReviewService } from './service/review-service.js';
+import { ReviewProcess } from './process/review-process.js';
+import { ClientRepository } from './db/raw/repository/client-repository.js';
+import { ClientDbService } from './db/service/client-db-service.js';
+import { ClientService } from './service/client-service.js';
 import { EventDeliveryProcess } from './process/event-delivery-process.js';
 export async function createApiContainer(config: AppConfig, logger: Logger) {
   const db = createDatabase(config, logger);
@@ -36,6 +43,10 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
     await db.ready();
     await redis.connect();
     const { provider, jwksUri } = await OidcProvider.discover(config);
+    const storage = createFileStorage(config);
+    const profiles = new ProfileService(
+      new ProfileDbService(db, new ProfileRepository(), new EventRepository()),
+    );
     const identities = new IdentityService(
       new IdentityDbService(db, new IdentityRepository()),
       config.TENANT_HOSTS,
@@ -75,12 +86,25 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       auth,
       photos: new PhotoProcess(
         new PhotoService(new PhotoDbService(db, new PhotoRepository(), new EventRepository())),
-        createFileStorage(config),
+        storage,
         processImage,
         logger,
       ),
-      profiles: new ProfileService(
-        new ProfileDbService(db, new ProfileRepository(), new EventRepository()),
+      profiles,
+      reviews: new ReviewProcess(
+        new ReviewService(
+          new ReviewDbService(
+            db,
+            new ReviewRepository(),
+            new ProfileRepository(),
+            new EventRepository(),
+          ),
+        ),
+        storage,
+      ),
+      clients: new ClientService(
+        new ClientDbService(db, new ClientRepository(), new EventRepository()),
+        profiles,
       ),
       ready: async () => {
         await db.ping();

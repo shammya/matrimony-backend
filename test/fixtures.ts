@@ -42,3 +42,27 @@ export const unusedPhotos = {
   makePrimary: unused,
   image: unused,
 };
+
+/** A review process that must not be reached, for tests about other routes. */
+export const unusedReviews = {
+  list: unused,
+  pendingCount: unused,
+  detail: unused,
+  approve: unused,
+  reject: unused,
+  photo: unused,
+};
+
+/** A client service that must not be reached, for tests about other routes. */
+export const unusedClients = {
+  list: unused,
+  detail: unused,
+  create: unused,
+  save: unused,
+  submit: unused,
+  requestEdit: unused,
+  cancelPending: unused,
+  changeStatus: unused,
+  assign: unused,
+  listStaff: unused,
+};

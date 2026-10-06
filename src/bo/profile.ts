@@ -296,6 +296,53 @@ export function diffProfileData(current: ProfileData, next: ProfileData): Propos
 
 export const isEmptyChange = (changes: ProposedChanges) => Object.keys(changes).length === 0;
 
+/** The published content with a request's changes applied: what approving the request produces. */
+export function applyChanges(current: ProfileData, changes: ProposedChanges): ProfileData {
+  return {
+    profile: { ...current.profile, ...changes.profile },
+    contact: { ...current.contact, ...changes.contact },
+    preferences: { ...current.preferences, ...changes.preferences },
+  };
+}
+
+/** One field a reviewer is asked to look at: where it is, and its value before and after. */
+export interface FieldChange {
+  /** For example `profile.heightCm`. */
+  path: string;
+  before: unknown;
+  after: unknown;
+}
+
+const isEmptyValue = (value: unknown) =>
+  value === null ||
+  value === undefined ||
+  value === '' ||
+  (Array.isArray(value) && value.length === 0);
+
+/** The fields a request changes, each with the published value and the proposed one. */
+export function describeChanges(current: ProfileData, changes: ProposedChanges): FieldChange[] {
+  const out: FieldChange[] = [];
+  for (const section of ['profile', 'contact', 'preferences'] as const) {
+    const before = current[section] as Record<string, unknown>;
+    const proposed = (changes[section] ?? {}) as Record<string, unknown>;
+    for (const [key, after] of Object.entries(proposed)) {
+      out.push({ path: `${section}.${key}`, before: before[key] ?? null, after });
+    }
+  }
+  return out;
+}
+
+/** Everything filled in on a profile, for a first submission where nothing was published before. */
+export function describeContent(data: ProfileData): FieldChange[] {
+  const out: FieldChange[] = [];
+  for (const section of ['profile', 'contact', 'preferences'] as const) {
+    for (const [key, value] of Object.entries(data[section] as Record<string, unknown>)) {
+      if (!isEmptyValue(value)) out.push({ path: `${section}.${key}`, before: null, after: value });
+    }
+  }
+  return out;
+}
+
 /** A member code such as M0483921. Random so codes do not reveal how many members there are. */
 export function newMemberCode(): string {
   return `M${randomInt(0, 10_000_000).toString().padStart(7, '0')}`;

@@ -142,3 +142,19 @@ npm run test:integration
 These tests create schemas/test roles and rows in that named test database. They verify real RLS/rollback, pooled-context reset, Redis refresh races, outbox lease fencing and Mongo idempotency. External OIDC exchanges still require acceptance testing against the configured provider. See [validation record](docs/design/scaffold-validation.md).
 
 The Dockerfile runs compiled code as a non-root user. Run the same image with `node dist/worker.js` for the worker. Run migrations from a separate operator/release environment before deployment, never automatically during API startup. Roll back application images only while the schema remains backward-compatible; there is no destructive automatic down migration. Budget database connections as replicas × pool limit, and provision managed-service backups, alerts and worker supervision before live launch.
+
+## Approval queue and client management
+
+Routes (staff only): `GET /api/v1/reviews`, `/reviews/summary`, `/reviews/:id`, `/reviews/:id/photo`, `POST /reviews/:id/approve` and `/reject`; `GET/POST /api/v1/staff/clients`, `GET/PUT /staff/clients/:profileId`, `POST .../submit`, `.../edit-requests`, `.../status`, `DELETE .../pending-review`, `PUT .../assignment` (admin only), `GET /api/v1/admin/staff` (admin only). The contract is in `docs/api/openapi.yaml`.
+
+Rules, enforced in the services (`review-service.ts`, `client-service.ts`, `profile-service.ts`) and by the database:
+
+- **Who sees what.** An admin sees everything. An agent sees the requests assigned to them and unassigned ones, and only their own clients.
+- **Four eyes.** Nobody decides a request they sent themselves, except an admin (`REVIEW_OWN_SUBMISSION`).
+- **Stale requests.** A request records the profile version it was made against. If the profile has changed, or the reviewer's `profileVersion` is not the current one, approval is refused with 409 `REVIEW_OUT_OF_DATE`. Deciding locks the rows, so two reviewers cannot both decide.
+- **Rejecting** a change to a published profile leaves the profile untouched. Approving a photo publishes it and makes it the main photo if there is none.
+- **Clients.** An assisted client has no login (`owner_account_id` is NULL, `service_mode = 'assisted'`) and is edited by staff through the same review flow as a member. Staff can see a self-service member and change its status, never its content (`PROFILE_SELF_SERVICE`). Status moves follow `STATUS_MOVES` in `src/bo/access.ts`; a closed profile is final. Only an admin assigns a client, to an active admin or agent.
+- **Migration 006** changes the version trigger so that changing only `assigned_agent_id` does not bump the profile version (which would make waiting requests stale); any other update still does.
+- **Paging** uses a cursor built from a microsecond `position` string, because JavaScript dates lose microseconds and the last row would otherwise repeat.
+
+Not built yet: client photos and inviting staff.

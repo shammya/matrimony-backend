@@ -15,6 +15,12 @@ export interface ProfileRecord {
   id: string;
   memberCode: string;
   status: ProfileStatus;
+  /** A member who runs their own profile, or a client whose profile the agency runs. */
+  serviceMode: 'self_service' | 'assisted';
+  /** The member's account. Null for an assisted client, who has no login. */
+  ownerId: string | null;
+  /** The agent responsible for this profile, if one has been assigned. */
+  assignedAgentId: string | null;
   /** Rises on every change. A request made against an older version is out of date. */
   version: number;
   /** Worked out from the district, never sent by the client. */

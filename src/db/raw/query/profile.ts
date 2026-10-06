@@ -27,13 +27,24 @@ const REVIEW_COLUMNS =
   'id, kind, status, base_profile_version, proposed_changes, reviewer_notes, reviewed_at, created_at';
 const PROFILE_REVIEW_KINDS = "kind IN ('initial_submission', 'field_update')";
 
-const byOwner = `SELECT id, member_code, status, version, current_division_code, created_at, updated_at, ${selectList(PROFILE_COLUMNS)}
- FROM matrimony.member_profiles WHERE agency_id = $1 AND owner_account_id = $2`;
+const SELECT_PROFILE = `SELECT id, member_code, status, version, service_mode, owner_account_id, assigned_agent_id, current_division_code, created_at, updated_at, ${selectList(PROFILE_COLUMNS)}
+ FROM matrimony.member_profiles`;
+const byOwner = `${SELECT_PROFILE} WHERE agency_id = $1 AND owner_account_id = $2`;
+const byId = `${SELECT_PROFILE} WHERE agency_id = $1 AND id = $2`;
 
 export const profileQueries = {
   byOwner,
   // Locks the row so two requests changing the same profile run one after the other.
   byOwnerForUpdate: `${byOwner} FOR UPDATE`,
+  byId,
+  byIdForUpdate: `${byId} FOR UPDATE`,
+
+  // An assisted client: no owner, created by staff, assigned to an agent.
+  // $1 agency, $2 member code, $3 created by, $4 assigned agent, $5 division, then the columns.
+  insertClient: `INSERT INTO matrimony.member_profiles
+ (agency_id, member_code, owner_account_id, created_by_account_id, assigned_agent_id, service_mode, current_division_code, ${names(PROFILE_COLUMNS)})
+ VALUES ($1, $2, NULL, $3, $4, 'assisted', $5, ${marks(PROFILE_COLUMNS, 6)})
+ ON CONFLICT DO NOTHING RETURNING id`,
 
   // $1 agency, $2 member code, $3 owner (also the creator), $4 division, then the columns.
   insert: `INSERT INTO matrimony.member_profiles

@@ -4,7 +4,15 @@ import { pino } from 'pino';
 import type { Redis } from 'ioredis';
 import { loadConfig } from '../src/config/env.js';
 import { buildApp } from '../src/controller/app.js';
-import { agency, config, env, unusedPhotos, unusedProfiles } from './fixtures.js';
+import {
+  agency,
+  config,
+  env,
+  unusedPhotos,
+  unusedReviews,
+  unusedClients,
+  unusedProfiles,
+} from './fixtures.js';
 
 const SECRET = 'a-long-development-only-secret-0123456789';
 const redis = {
@@ -26,6 +34,8 @@ async function setup(withSink = true, nodeEnv: 'development' | 'production' = 'd
     ready: async () => {},
     profiles: unusedProfiles,
     photos: unusedPhotos,
+    reviews: unusedReviews,
+    clients: unusedClients,
     ...(withSink
       ? { devSms: { secret: SECRET, write: (line: string) => printed.push(line) } }
       : {}),
