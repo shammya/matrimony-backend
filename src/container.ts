@@ -25,6 +25,9 @@ import { PhotoService } from './service/photo-service.js';
 import { PhotoProcess } from './process/photo-process.js';
 import { processImage } from './security/image-processor.js';
 import { createFileStorage } from './storage/config/storage.js';
+import { RegistrationRepository } from './db/raw/repository/registration-repository.js';
+import { RegistrationDbService } from './db/service/registration-db-service.js';
+import { RegistrationService } from './service/registration-service.js';
 import { EventDeliveryProcess } from './process/event-delivery-process.js';
 export async function createApiContainer(config: AppConfig, logger: Logger) {
   const db = createDatabase(config, logger);
@@ -48,6 +51,9 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       ),
       new SessionRepository(redis),
       identities,
+      new RegistrationService(
+        new RegistrationDbService(db, new RegistrationRepository(), new EventRepository()),
+      ),
       new EventDbService(db, new EventRepository()),
       new SecretBox(config.SESSION_ENCRYPTION_KEY),
       config.SESSION_TTL_SECONDS,
@@ -57,6 +63,14 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       config,
       logger,
       redis,
+      // Development only. Never set in production: the configuration refuses it there.
+      devSms:
+        config.NODE_ENV !== 'production' && config.DEV_SMS_SINK_SECRET
+          ? {
+              secret: config.DEV_SMS_SINK_SECRET,
+              write: (line: string) => process.stdout.write(`${line}\n`),
+            }
+          : undefined,
       identities,
       auth,
       photos: new PhotoProcess(

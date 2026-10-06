@@ -45,6 +45,7 @@ async function build(
         throw new Error('unused');
       },
       begin: async () => ({ challengeId, authorizationUrl: 'https://issuer' }),
+      beginRegistration: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
       complete:
         overrides.complete ??
         (async () => {

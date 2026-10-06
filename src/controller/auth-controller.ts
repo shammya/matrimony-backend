@@ -4,10 +4,14 @@ import type { AuthProcess } from '../process/auth-process.js';
 import type { AppConfig } from '../config/env.js';
 import { AppError } from '../exception/app-error.js';
 import { browserSecretSchema, tokensResponseSchema } from '../io/http/contracts.js';
+import { registrationInputSchema, toRegistration } from '../bo/registration.js';
 import './context.js';
 export function registerAuthController(
   app: FastifyInstance,
-  auth: Pick<AuthProcess, 'begin' | 'complete' | 'bootstrap' | 'refresh' | 'logout'>,
+  auth: Pick<
+    AuthProcess,
+    'begin' | 'beginRegistration' | 'complete' | 'bootstrap' | 'refresh' | 'logout'
+  >,
   config: AppConfig,
 ) {
   const prefix = config.NODE_ENV === 'production' ? '__Host-' : '';
@@ -46,6 +50,29 @@ export function registerAuthController(
       const result = await auth.begin(
         req.tenant!.id,
         `${req.canonicalOrigin}/api/v1/auth/callback`,
+      );
+      reply.setCookie(challengeCookie, result.challengeId, { ...cookieOptions, maxAge: 300 });
+      return { authorizationUrl: result.authorizationUrl };
+    },
+  );
+  // Starts registering a new member. What they agreed to is validated here and kept sealed with
+  // the login attempt; the account is only created once the provider has verified their phone.
+  // A tighter limit than login: each completed registration creates a database account.
+  app.post(
+    '/api/v1/auth/register',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 600000 } },
+      schema: {
+        response: { 200: { type: 'object', properties: { authorizationUrl: { type: 'string' } } } },
+      },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const input = registrationInputSchema.parse(req.body);
+      const result = await auth.beginRegistration(
+        req.tenant!.id,
+        `${req.canonicalOrigin}/api/v1/auth/callback`,
+        toRegistration(input),
       );
       reply.setCookie(challengeCookie, result.challengeId, { ...cookieOptions, maxAge: 300 });
       return { authorizationUrl: result.authorizationUrl };

@@ -5,6 +5,8 @@ import type { JwtVerifier } from '../security/jwt-verifier.js';
 import { SecretBox, digest } from '../security/secret-box.js';
 import type { SessionRepository, Session } from '../cache/repository/session-repository.js';
 import type { IdentityService } from '../service/identity-service.js';
+import type { RegistrationService } from '../service/registration-service.js';
+import { registrationSchema, type Registration } from '../bo/registration.js';
 import type { EventDbService } from '../db/service/event-db-service.js';
 import type { WorkflowEvent } from '../bo/event.js';
 import { AppError } from '../exception/app-error.js';
@@ -15,6 +17,9 @@ const challengeSchema = z.object({
   nonce: z.string(),
   verifier: z.string(),
   redirectUri: z.string().url(),
+  // Sealed with the rest, so a browser cannot change what it agreed to or what it is registering as.
+  intent: z.enum(['login', 'register']).default('login'),
+  registration: registrationSchema.optional(),
 });
 const secret = () => randomBytes(32).toString('base64url');
 export class AuthProcess {
@@ -33,23 +38,41 @@ export class AuthProcess {
       | 'takeChallenge'
     >,
     private readonly identities: Pick<IdentityService, 'account'>,
+    private readonly registrations: Pick<RegistrationService, 'find' | 'register'>,
     private readonly events: Pick<EventDbService, 'record'>,
     private readonly box: SecretBox,
     private readonly ttl: number,
     private readonly logger: Logger,
   ) {}
   async begin(agencyId: string, redirectUri: string) {
+    return this.start(agencyId, redirectUri, 'login');
+  }
+  /**
+   * Starts a registration. What the person agreed to travels sealed with the login attempt, and
+   * is acted on only if the provider then verifies their phone: no account without consent, and
+   * no consent without an account.
+   */
+  async beginRegistration(agencyId: string, redirectUri: string, registration: Registration) {
+    return this.start(agencyId, redirectUri, 'register', registration);
+  }
+  private async start(
+    agencyId: string,
+    redirectUri: string,
+    intent: 'login' | 'register',
+    registration?: Registration,
+  ) {
     const id = secret();
     const challenge = {
       agencyId,
       redirectUri,
+      intent,
       state: secret(),
       nonce: secret(),
       verifier: secret(),
     };
     await this.sessions.putChallenge(
       digest(id),
-      this.box.seal(JSON.stringify(challenge), digest(id)),
+      this.box.seal(JSON.stringify({ ...challenge, registration }), digest(id)),
     );
     return { challengeId: id, authorizationUrl: await this.provider.authorize(challenge) };
   }
@@ -67,7 +90,32 @@ export class AuthProcess {
     const identity = await this.verifier.verify(tokens.accessToken);
     if (!tokens.subject || tokens.subject !== identity.subject)
       throw new AppError(401, 'OAUTH_SUBJECT_MISMATCH');
-    const account = await this.identities.account(agencyId, identity.issuer, identity.subject);
+    const found = await this.registrations.find(agencyId, identity.issuer, identity.subject);
+    let account;
+    if (found) {
+      // An account that exists but cannot log in (invited, disabled) is never "registered" again.
+      if (found.status !== 'active') throw new AppError(403, 'ACCOUNT_NOT_ACTIVE');
+      // Registering again with the same identity is simply a login.
+      account = found.account;
+    } else if (challenge.intent === 'register' && challenge.registration) {
+      if (!tokens.phone) {
+        // Only the names of the claims are logged, never their values, so a missing or
+        // differently named phone claim can be diagnosed without exposing anyone's data.
+        this.logger.warn(
+          { code: 'REGISTRATION_PHONE_MISSING', claimNames: tokens.claimNames ?? [] },
+          'The identity provider did not return a verified phone number',
+        );
+      }
+      account = await this.registrations.register(
+        agencyId,
+        { issuer: identity.issuer, subject: identity.subject, phone: tokens.phone },
+        challenge.registration,
+        correlationId,
+      );
+    } else {
+      // Logging in never creates an account.
+      throw new AppError(403, 'ACCOUNT_NOT_FOUND');
+    }
     const id = secret();
     const key = digest(id);
     const session: Session = {

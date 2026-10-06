@@ -20,6 +20,7 @@ tags:
   - name: Health
   - name: Tenant
   - name: Auth
+  - name: Registration
   - name: Session handoff
   - name: Account
   - name: My profile
@@ -100,6 +101,35 @@ paths:
         '404': { $ref: '#/components/responses/TenantNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /api/v1/auth/register:
+    post:
+      tags: [Registration]
+      summary: Start registering as a member
+      description: |
+        Public, 10 per 10 minutes per client, same-origin only. Checks what the person agreed to
+        and keeps it sealed with a 5-minute login attempt (a cookie), then returns the provider's
+        address. Nothing is created yet. The callback creates the member account only after the
+        provider has verified the phone number, then logs the person in. Registering again with a
+        sign-in that already has an account is simply a login. A login (not a registration) by
+        someone with no account ends at `/{locale}/login?error=ACCOUNT_NOT_FOUND`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterInput' }
+      responses:
+        '200':
+          description: Where to send the browser.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl: { type: string }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /api/v1/auth/callback:
     get:
       tags: [Auth]
@@ -881,6 +911,39 @@ components:
       properties:
         version: { type: integer, minimum: 1 }
 
+    RegisterInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, locale, acceptTerms, acceptPrivacy]
+      description: |
+        What a new member agrees to before going to the identity provider. The phone number is
+        not sent here: it is entered at the provider, verified with a one-time code, and read back
+        from the provider. A role can never be sent; registration only creates a member.
+      properties:
+        displayName:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 100,
+            description: The account holder's own name.,
+          }
+        locale: { type: string, enum: [bn, en], description: The language the person is reading. }
+        acceptTerms: { type: boolean, enum: [true], description: Must be true. }
+        acceptPrivacy: { type: boolean, enum: [true], description: Must be true. }
+        onBehalfOfOther:
+          {
+            type: boolean,
+            default: false,
+            description: Registering for a son,
+            daughter,
+            sibling or relative.,
+          }
+        confirmAuthority:
+          {
+            type: boolean,
+            default: false,
+            description: Required when registering for someone else.,
+          }
     PhotoState:
       type: string
       enum: [waiting, approved, rejected]
@@ -928,7 +991,9 @@ components:
                 NO_PENDING_REVIEW, NO_CHANGES, MEMBER_CODE_UNAVAILABLE, and for photos:
                 PHOTO_NOT_FOUND, PHOTO_LIMIT_REACHED, PHOTO_NOT_APPROVED, PHOTO_INVALID,
                 PHOTO_TYPE_UNSUPPORTED, PHOTO_TOO_SMALL, PAYLOAD_TOO_LARGE,
-                UNSUPPORTED_MEDIA_TYPE.
+                UNSUPPORTED_MEDIA_TYPE, and for registration: ACCOUNT_NOT_FOUND (a login for
+                someone with no account yet), PHONE_ALREADY_REGISTERED (the number belongs to a
+                different sign-in), REGISTRATION_PHONE_REQUIRED (the provider did not verify a phone).
             details:
               type: object
               description: |

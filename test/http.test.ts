@@ -38,6 +38,7 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
         return { ...account, subject: 'private-subject' };
       },
       begin: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
+      beginRegistration: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
       complete: async () => {
         throw new Error('unused');
       },

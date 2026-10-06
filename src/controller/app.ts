@@ -15,17 +15,20 @@ import { AppError } from '../exception/app-error.js';
 import { registerAuthController } from './auth-controller.js';
 import { registerProfileController } from './profile-controller.js';
 import { registerPhotoController } from './photo-controller.js';
+import { registerDevSmsSink, type DevSmsSink } from './dev-sms-controller.js';
 import type { PhotoProcess } from '../process/photo-process.js';
 import { fieldProblems } from '../io/http/validation.js';
 import type { ProfileService } from '../service/profile-service.js';
 import './context.js';
 export interface AppDependencies {
+  /** Development only: prints the sign-in code the identity provider would have texted. */
+  devSms?: DevSmsSink;
   config: AppConfig;
   logger: Logger;
   redis: Redis;
   auth: Pick<
     AuthProcess,
-    'begin' | 'complete' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'
+    'begin' | 'beginRegistration' | 'complete' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'
   >;
   identities: Pick<IdentityService, 'tenant'>;
   photos: Pick<PhotoProcess, 'list' | 'upload' | 'remove' | 'makePrimary' | 'image'>;
@@ -144,5 +147,6 @@ export async function buildApp(deps: AppDependencies) {
   registerAuthController(app, deps.auth, config);
   registerProfileController(app, deps.profiles);
   registerPhotoController(app, deps.photos);
+  if (deps.devSms && config.NODE_ENV !== 'production') registerDevSmsSink(app, deps.devSms);
   return app;
 }

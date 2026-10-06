@@ -41,11 +41,19 @@ const schema = z
     OIDC_CLIENT_SECRET: z.string().min(1),
     OIDC_AUDIENCE: z.string().min(1),
     OIDC_SCOPE: z.string().default('openid offline_access matrimony:api'),
+    // Optional name of the provider's phone (SMS) connection, so registration goes straight to it.
+    OIDC_REGISTER_CONNECTION: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,100}$/)
+      .optional(),
     OIDC_REQUIRED_SCOPE: z.string().regex(/^\S+$/).default('matrimony:api'),
     SESSION_ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
     SESSION_TTL_SECONDS: integer(28800, 300, 86400),
     WORKER_POLL_MS: integer(1000, 100),
     EVENT_MAX_ATTEMPTS: integer(12, 1, 100),
+    // Development only: lets the identity provider's delivery action print the sign-in code in
+    // the backend's terminal instead of sending a text. Refused in production.
+    DEV_SMS_SINK_SECRET: z.string().min(24).max(200).optional(),
     // Where uploaded files (member photos) are kept. `local` is for development; `s3` works with
     // Amazon S3 and S3-compatible stores. Switching needs these values and no code change.
     STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
@@ -90,6 +98,12 @@ const schema = z
         message: 'Configure TLS with DB_SSL, not URL flags',
       });
     if (c.NODE_ENV === 'production') {
+      if (c.DEV_SMS_SINK_SECRET)
+        ctx.addIssue({
+          code: 'custom',
+          path: ['DEV_SMS_SINK_SECRET'],
+          message: 'The development SMS sink must be off in production',
+        });
       if (c.STORAGE_DRIVER !== 's3')
         ctx.addIssue({
           code: 'custom',

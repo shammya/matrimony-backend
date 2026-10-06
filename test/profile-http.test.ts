@@ -50,6 +50,7 @@ async function setup(role: 'member' | 'agent' = 'member') {
     auth: {
       authenticate: async () => ({ ...account, role, subject: 's' }),
       begin: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
+      beginRegistration: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
       complete: async () => {
         throw new Error('unused');
       },

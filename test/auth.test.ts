@@ -75,6 +75,10 @@ function fixture() {
     },
     sessions,
     { account: async () => account },
+    {
+      find: async () => ({ account, status: 'active' as const }),
+      register: async () => account,
+    },
     { record: async () => {} },
     box,
     3600,

@@ -77,6 +77,29 @@ After login the callback redirects to the frontend, which calls `POST /api/v1/au
 
 Use same-origin frontend/API routing. Forwarded-host headers are ignored. Configure the ingress to preserve the allowlisted Host, strip spoofed forwarding headers and perform per-client rate limiting. The API also uses Redis-backed limits; with `trustProxy: false`, requests through one proxy share its IP bucket. Do not change to `trustProxy: true` without a bounded trusted-proxy configuration. Production requires HTTPS ingress, secure host-only cookies, verified database/Mongo TLS and `rediss://`.
 
+## Registration and phone sign-in
+
+Members register themselves with a phone number; agents and admins are created by an admin. The flow:
+
+1. `POST /api/v1/auth/register` checks what the person agreed to (name, language, terms, privacy, and the confirmation of authority when registering for someone else). Nothing is created. The answers are sealed with the one-time login attempt (the challenge cookie), so they cannot be altered or reused.
+2. The browser goes to the identity provider, where the person enters their phone number and the one-time code (SMS).
+3. In the callback, the backend reads the **phone number the provider says it verified**. Only then does `RegistrationService` create the account (role `member`, always), record the consents with the document versions, and append an `account.registered` event, in one transaction. A login never creates an account: someone with no account ends at `/login?error=ACCOUNT_NOT_FOUND`.
+4. Registering again with a sign-in that already has an account is simply a login. A phone number that belongs to a *different* sign-in is refused (`PHONE_ALREADY_REGISTERED`), never linked automatically, because a recycled number could otherwise hand one person's account to another.
+
+Rate limits: the provider limits OTP sending; the API limits starting a registration to 10 per 10 minutes per client address, on top of the general limit.
+
+**Identity provider setup (Auth0, development)**
+
+- Authentication → Passwordless → **SMS**: turn it on, and set the Twilio Account SID, Auth Token and the sender number (or a Messaging Service) in Auth0 only. Enable the connection for the application.
+- With a Twilio **trial** account, messages go only to verified numbers (Phone Numbers → Verified Caller IDs), carry a trial note, and Bangladesh must be enabled under Messaging → Settings → Geo permissions.
+- Registration requests the `phone` scope, and the account is created only from a phone number the provider verified (see `verifiedPhone` in `src/security/oidc-provider.ts`): `phone_number_verified: true`, or, because Auth0 omits that flag for passwordless SMS users, a sign-in through the phone connection itself (subject starting `sms|`, which requires `OIDC_REGISTER_CONNECTION`). An explicit `phone_number_verified: false` is always refused. If registration ends at `REGISTRATION_PHONE_REQUIRED`, the backend logs `REGISTRATION_PHONE_MISSING` with the names (never the values) of the claims it received.
+- Optional `OIDC_REGISTER_CONNECTION` (for example `sms`) sends registration straight to that connection instead of the provider's general sign-in screen.
+- For production, choose a Bangladeshi SMS gateway and connect it in the provider (Auth0 supports a custom phone provider through an Action). Nothing in this application changes. Check delivery, speed and sender-name rules with the real gateway before launch.
+
+**Development SMS sink (no SMS provider needed).** Set `DEV_SMS_SINK_SECRET` (24 or more characters, in `.env` only) and the backend serves `POST /api/v1/dev/sms`, which prints the identity provider's message, including the one-time code, in the backend's terminal as `[dev sms] to +880…: …`. In Auth0 this is done with a **Custom Phone Provider** action (Branding → Phone Provider → Custom; the action's trigger is "Custom Phone Provider", handler `onExecuteCustomPhoneProvider`, the message in `event.notification.recipient` and `event.notification.as_text`). It posts to this endpoint through a public tunnel to the backend (for example `"C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:4000`), sending the secret in the `x-dev-sms-secret` header from an action secret named `DEV_SMS_SECRET`. Also needed in Auth0: the passwordless **SMS** connection (named `sms`) switched on for the application, and Authentication → Authentication Profile set to **Identifier First**, otherwise the New Universal Login ignores the `connection=sms` request and shows email and password. While testing, keep four things running: the WSL keep-alive (`wsl -d Ubuntu -u root -- sleep infinity`, which keeps Redis up), the backend, the tunnel, and the frontend. The endpoint answers 404 without the secret, stores nothing, does not exist when the secret is unset, and the configuration refuses the secret in production. Quick tunnels get a new address each run, so update the action's address when the tunnel restarts. This replaces only the delivery step: it says nothing about real delivery, speed or Bangladesh sender rules, so test those with the real gateway before launch.
+
+The terms and privacy texts are **drafts** (`TERMS_VERSION` and `PRIVACY_VERSION` in `src/bo/registration.ts`, texts in the frontend message files). Change the versions when the final text is published; each acceptance is stored with the version it was given for.
+
 ## Database and crucial events
 
 Each process owns one bounded PostgreSQL pool; the worker also owns one MongoClient pool. API requests never create pools. Every domain query runs in a transaction with transaction-local `app.agency_id`. Runtime roles cannot be superusers or bypass RLS. Runtime grants currently allow account/tenant reads and outbox operations; feature write grants are introduced with their use cases. Migration credentials must never be provided to the HTTP request layer.
