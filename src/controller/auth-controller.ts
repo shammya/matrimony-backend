@@ -108,13 +108,21 @@ export function registerAuthController(
     '/api/v1/auth/verify-email',
     {
       config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
-      schema: { response: { 200: statusResponseSchema } },
+      schema: { response: { 200: tokensResponseSchema } },
     },
-    async (req) => {
+    async (req, reply) => {
       requireSameOrigin(req);
       const { token } = verifyEmailInputSchema.parse(req.body);
-      await access.verifyEmail(req.tenant!.id, token, req.id);
-      return { status: 'verified' };
+      const result = await access.verifyEmail(req.tenant!.id, token, req.id);
+      reply.setCookie(sessionCookie, result.sessionId, {
+        ...cookieOptions,
+        maxAge: config.SESSION_TTL_SECONDS,
+      });
+      return {
+        accessToken: result.accessToken,
+        csrfToken: result.csrfToken,
+        expiresIn: result.expiresIn,
+      };
     },
   );
   // Checks the email and password, starts the session and returns its tokens in the same response,

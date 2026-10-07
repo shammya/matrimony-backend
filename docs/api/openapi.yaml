@@ -113,12 +113,14 @@ paths:
   /api/v1/auth/verify-email:
     post:
       tags: [Registration]
-      summary: Open the emailed link, which proves the address and creates the account
+      summary: Open the emailed link, which proves the address, creates the account and signs in
       description: |
         Public, 10 per minute, same-origin only. The link works once, for 24 hours, and only at
         the agency that sent it. The account, its password, the consents and an event are written
-        together. It does not sign the person in: they sign in next. A used, expired or unknown
-        link is 400 `LINK_INVALID_OR_EXPIRED`.
+        together, and a session starts exactly like a login (the cookie is set and the tokens are
+        returned). Only the request that creates the account gets a session: an address that
+        already has one (another route, another link) is refused like a used link. A used, expired
+        or unknown link is 400 `LINK_INVALID_OR_EXPIRED`.
       requestBody:
         required: true
         content:
@@ -126,10 +128,13 @@ paths:
             schema: { $ref: '#/components/schemas/LinkToken' }
       responses:
         '200':
-          description: The account exists. Sign in.
+          description: The account exists and the person is signed in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Status' }
+              schema: { $ref: '#/components/schemas/Tokens' }
         '400': { $ref: '#/components/responses/Error400' }
         '403': { $ref: '#/components/responses/Error403' }
         '429': { $ref: '#/components/responses/RateLimited' }

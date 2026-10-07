@@ -133,6 +133,7 @@ await test('the whole email and password journey over HTTP', async (t) => {
     oneTimeTokens,
     throttle,
     sessions,
+    auth,
     {
       send: async (message) => {
         mails.push(message);
@@ -215,6 +216,9 @@ await test('the whole email and password journey over HTTP', async (t) => {
   };
   const logIn = (visit: ReturnType<typeof as>, name: string, password = strongPassword) =>
     visit('POST', '/api/v1/auth/login', { body: { email: email(name), password } });
+  const cookieFrom = (response: { headers: Record<string, unknown> }, name: string) =>
+    new RegExp(name + '=([^;]*)').exec([response.headers['set-cookie']].flat().join(';'))?.[1] ??
+    '';
   const me = (visit: ReturnType<typeof as>, token: string) =>
     visit('GET', '/api/v1/me', { headers: { authorization: `Bearer ${token}` } });
 
@@ -287,7 +291,7 @@ await test('the whole email and password journey over HTTP', async (t) => {
       );
       assert.deepEqual(
         events.rows.map((r) => r.event.type),
-        ['account.registered'],
+        ['account.registered', 'auth.login'],
       );
       assert.equal(JSON.stringify(events.rows).includes(email('stored')), false);
     },
@@ -331,10 +335,13 @@ await test('the whole email and password journey over HTTP', async (t) => {
       body: { token },
     });
     assert.equal(elsewhere.statusCode, 400);
-    assert.equal(
-      (await visit('POST', '/api/v1/auth/verify-email', { body: { token } })).statusCode,
-      200,
-    );
+    const opened = await visit('POST', '/api/v1/auth/verify-email', { body: { token } });
+    assert.equal(opened.statusCode, 200);
+    // Confirming the address also signs the person in, like a login.
+    assert.equal(cookieFrom(opened, 'matrimony-session').length, 43);
+    const profile = await me(visit, opened.json().accessToken);
+    assert.equal(profile.statusCode, 200);
+    assert.equal(profile.json().role, 'member');
     const reused = await visit('POST', '/api/v1/auth/verify-email', { body: { token } });
     assert.equal(reused.statusCode, 400);
     assert.equal(reused.json().error.code, 'LINK_INVALID_OR_EXPIRED');
@@ -471,9 +478,6 @@ await test('the whole email and password journey over HTTP', async (t) => {
   );
 
   // ---- sign in with Google ----
-  const cookieFrom = (response: { headers: Record<string, unknown> }, name: string) =>
-    new RegExp(name + '=([^;]*)').exec([response.headers['set-cookie']].flat().join(';'))?.[1] ??
-    '';
   const person = (name: string, over: Partial<GoogleProfile> = {}): GoogleProfile => ({
     subject: `sub-${name}-${run}`,
     email: email(name),

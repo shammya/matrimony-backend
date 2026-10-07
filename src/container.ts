@@ -110,6 +110,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       oneTimeTokens,
       throttle,
       sessions,
+      auth,
       createMailer(config),
       box,
       logger,

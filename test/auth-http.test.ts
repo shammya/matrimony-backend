@@ -133,7 +133,10 @@ async function build(
         'startRegistration',
         undefined,
       ) as AppDependencies['access']['startRegistration'],
-      verifyEmail: track('verifyEmail', undefined) as AppDependencies['access']['verifyEmail'],
+      verifyEmail: track('verifyEmail', {
+        sessionId,
+        ...tokens,
+      }) as AppDependencies['access']['verifyEmail'],
       requestPasswordReset: track(
         'requestPasswordReset',
         undefined,
@@ -378,13 +381,15 @@ await test('too many emails to one address is a 429 that says when to retry', as
   assert.equal(response.headers['retry-after'], '1200');
 });
 
-await test('opening the emailed link verifies the address', async (t) => {
+await test('confirming the emailed link signs the person in: tokens in the body, session in the cookie', async (t) => {
   const { app, calls, post } = await build();
   t.after(() => app.close());
   const response = await post('/api/v1/auth/verify-email', { token: linkToken });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json(), { status: 'verified' });
-  assert.equal(cookiesOf(response), '');
+  assert.deepEqual(response.json(), tokens);
+  assert.match(cookiesOf(response), new RegExp(`matrimony-session=${sessionId}`));
+  assert.match(cookiesOf(response), /HttpOnly/);
+  assert.match(cookiesOf(response), /SameSite=Strict/);
   assert.deepEqual(calls.verifyEmail![0]!.slice(0, 2), [agency, linkToken]);
   assert.equal(typeof calls.verifyEmail![0]![2], 'string');
 });

@@ -80,6 +80,7 @@ function setup(options: { registered?: string[]; record?: Partial<CredentialReco
           ...options.record,
         };
 
+  const started_: { agencyId: string; accountId: string; correlationId: string }[] = [];
   const process = new AccountAccessProcess(
     {
       emailRegistered: async (_agency, email) => registered.has(email),
@@ -108,6 +109,12 @@ function setup(options: { registered?: string[]; record?: Partial<CredentialReco
       },
     },
     {
+      startSession: async (agencyId, started, correlationId) => {
+        started_.push({ agencyId, accountId: started.id, correlationId });
+        return { sessionId: 's'.repeat(43), accessToken: 'jwt', csrfToken: 'csrf', expiresIn: 600 };
+      },
+    },
+    {
       send: async (message) => {
         if (mailFails) throw new Error(`smtp refused ${message.to}`);
         mails.push(message);
@@ -118,6 +125,7 @@ function setup(options: { registered?: string[]; record?: Partial<CredentialReco
   );
   return {
     process,
+    started: started_,
     registered,
     mails,
     created,
@@ -172,8 +180,13 @@ await test('the password is never kept or sent as typed: only its hash, sealed, 
 await test('opening the link creates the account from what was typed, with the terms as they were', async () => {
   const f = setup();
   await f.settle(f.process.startRegistration(context, { ...input, onBehalfOfOther: true }));
-  await f.process.verifyEmail(agency, tokenIn(f.mails[0]!), 'req-7');
+  const session = await f.process.verifyEmail(agency, tokenIn(f.mails[0]!), 'req-7');
   assert.equal(f.created.length, 1);
+  // The person who confirmed the address is signed in, as the account that was just created.
+  assert.deepEqual(f.started, [
+    { agencyId: agency, accountId: account.id, correlationId: 'req-7' },
+  ]);
+  assert.equal(session.accessToken, 'jwt');
   const { agencyId, verified, correlationId } = f.created[0]!;
   assert.equal(agencyId, agency);
   assert.equal(correlationId, 'req-7');
@@ -283,13 +296,27 @@ await test('a mail service failure does not fail the request or leak the address
   assert.equal(logged.includes('smtp refused'), false);
 });
 
-await test('opening the link after the address got an account by another route is not an error and creates nothing', async () => {
+await test('opening the link after the address got an account by another route creates nothing and signs nobody in', async () => {
   const f = setup();
   await f.settle(f.process.startRegistration(context, input));
   f.registered.add('rahim@example.com');
-  await f.process.verifyEmail(agency, tokenIn(f.mails[0]!), 'req');
-  // The service was asked and answered "already there"; the caller sees success either way.
+  await assert.rejects(
+    () => f.process.verifyEmail(agency, tokenIn(f.mails[0]!), 'req'),
+    code(400, 'LINK_INVALID_OR_EXPIRED'),
+  );
+  // The service was asked and answered "already there": a link never signs anyone into an
+  // account it did not create.
   assert.equal(f.created.length, 1);
+  assert.equal(f.started.length, 0);
+});
+
+await test('a link that failed to create the account starts no session', async () => {
+  const f = setup();
+  await assert.rejects(
+    () => f.process.verifyEmail(agency, 'z'.repeat(43), 'req'),
+    code(400, 'LINK_INVALID_OR_EXPIRED'),
+  );
+  assert.equal(f.started.length, 0);
 });
 
 await test('asking to reset emails a link only when the address belongs to an active account', async () => {

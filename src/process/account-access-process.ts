@@ -15,6 +15,7 @@ import {
 } from '../mail/messages.js';
 import type { Mailer, MailMessage } from '../mail/mailer.js';
 import { SecretBox, digest } from '../security/secret-box.js';
+import type { AuthProcess } from './auth-process.js';
 import type { CredentialService } from '../service/credential-service.js';
 import type { RegistrationService } from '../service/registration-service.js';
 
@@ -63,6 +64,7 @@ export class AccountAccessProcess {
     private readonly tokens: Pick<OneTimeTokenRepository, 'put' | 'take'>,
     private readonly throttle: Pick<ThrottleRepository, 'hit'>,
     private readonly sessions: Pick<SessionRepository, 'removeAll'>,
+    private readonly auth: Pick<AuthProcess, 'startSession'>,
     private readonly mailer: Mailer,
     private readonly box: SecretBox,
     private readonly logger: Logger,
@@ -109,14 +111,20 @@ export class AccountAccessProcess {
     );
   }
 
-  /** Step two: the link was opened, so the address is proven and the account is created. */
+  /**
+   * Step two: the link was opened and confirmed, so the address is proven, the account is created
+   * and the person is signed in like after a login. Only the request that creates the account
+   * gets a session: if the address already has one (another route, or another link), the link is
+   * refused like an used one, so a link can never sign anyone into an account it did not create.
+   */
   async verifyEmail(agencyId: string, token: string, correlationId: string) {
     const key = tokenKey(agencyId, token);
     const sealed = await this.tokens.take('registration', key);
     if (!sealed) throw new AppError(400, 'LINK_INVALID_OR_EXPIRED');
     const pending = pendingRegistrationSchema.parse(JSON.parse(this.box.open(sealed, key)));
-    // Whether the account was just created or already existed, the person has proven the address.
-    await this.registrations.createVerified(agencyId, pending, correlationId);
+    const created = await this.registrations.createVerified(agencyId, pending, correlationId);
+    if (!created.created) throw new AppError(400, 'LINK_INVALID_OR_EXPIRED');
+    return this.auth.startSession(agencyId, created.account, correlationId);
   }
 
   /** Emails a reset link when the address has an account; either way the answer is the same. */
