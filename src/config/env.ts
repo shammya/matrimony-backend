@@ -56,6 +56,10 @@ const schema = z
     SMTP_TLS: z.enum(['starttls', 'implicit', 'none']).default('starttls'),
     SMTP_USER: z.string().min(1).optional(),
     SMTP_PASSWORD: z.string().min(1).optional(),
+    // Sign-in with Google. Both or neither: without them the Google button is not offered. Register
+    // each agency's exact callback address (https://<host>/api/v1/auth/google/callback) with Google.
+    GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     SESSION_ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
     SESSION_TTL_SECONDS: integer(28800, 300, 86400),
     WORKER_POLL_MS: integer(1000, 100),
@@ -93,6 +97,12 @@ const schema = z
       if (!allowed.includes(new URL(value).protocol))
         ctx.addIssue({ code: 'custom', path: [field], message: 'Unsupported protocol' });
     }
+    if (Boolean(c.GOOGLE_CLIENT_ID) !== Boolean(c.GOOGLE_CLIENT_SECRET))
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GOOGLE_CLIENT_SECRET'],
+        message: 'Set both the Google client id and secret, or neither',
+      });
     if (c.MAIL_DRIVER === 'smtp') {
       for (const [field, value] of [
         ['MAIL_FROM', c.MAIL_FROM],

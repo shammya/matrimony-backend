@@ -4,7 +4,7 @@ import type { Transaction } from '../../config/database.js';
 import { accountRow } from '../../entity/identity.js';
 import { accountWithStatusRow } from '../../entity/registration.js';
 import { mapAccount } from '../mapper/identity.js';
-import { registrationQueries } from '../query/registration.js';
+import { identityLinkQueries, registrationQueries } from '../query/registration.js';
 
 export interface FoundAccount {
   account: Account;
@@ -39,6 +39,41 @@ export class RegistrationRepository {
       member.locale,
     ]);
     return result.rows[0] ? mapAccount(accountRow.parse(result.rows[0])) : null;
+  }
+
+  /** The account linked to this provider identity, whatever its status. Null when none is. */
+  async findByIdentity(
+    tx: Transaction,
+    agencyId: string,
+    provider: string,
+    subject: string,
+  ): Promise<FoundAccount | null> {
+    const result = await tx.query(identityLinkQueries.accountByIdentity, [
+      agencyId,
+      provider,
+      subject,
+    ]);
+    const row = result.rows[0];
+    if (!row) return null;
+    const parsed = accountWithStatusRow.parse(row);
+    return { account: mapAccount(parsed), status: parsed.status };
+  }
+
+  /** True when linked. False when this identity, or this provider for this account, already is. */
+  async linkIdentity(
+    tx: Transaction,
+    agencyId: string,
+    accountId: string,
+    identity: { provider: string; subject: string; email: string },
+  ): Promise<boolean> {
+    const result = await tx.query(identityLinkQueries.insertIdentity, [
+      agencyId,
+      accountId,
+      identity.provider,
+      identity.subject,
+      identity.email,
+    ]);
+    return result.rowCount === 1;
   }
 
   async createCredential(tx: Transaction, agencyId: string, accountId: string, hash: string) {

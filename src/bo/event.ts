@@ -9,6 +9,7 @@ export const eventSchema = z
       'auth.refresh',
       'auth.logout',
       'auth.password_reset',
+      'auth.identity_linked',
       'account.registered',
       'profile.approved',
       'profile.submitted',

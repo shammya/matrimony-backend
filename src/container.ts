@@ -18,6 +18,8 @@ import { CredentialRepository } from './db/raw/repository/credential-repository.
 import { CredentialDbService } from './db/service/credential-db-service.js';
 import { CredentialService } from './service/credential-service.js';
 import { AccountAccessProcess } from './process/account-access-process.js';
+import { GoogleAuthProcess } from './process/google-auth-process.js';
+import { GoogleProvider } from './security/google-provider.js';
 import { SecretBox } from './security/secret-box.js';
 import { AuthProcess } from './process/auth-process.js';
 import { createMongo } from './mongo/config/client.js';
@@ -98,18 +100,38 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
         maxSessions: config.MAX_SESSIONS_PER_ACCOUNT,
       },
     );
+    const registrations = new RegistrationService(
+      new RegistrationDbService(db, new RegistrationRepository(), new EventRepository()),
+    );
+    const oneTimeTokens = new OneTimeTokenRepository(redis);
     const access = new AccountAccessProcess(
-      new RegistrationService(
-        new RegistrationDbService(db, new RegistrationRepository(), new EventRepository()),
-      ),
+      registrations,
       credentials,
-      new OneTimeTokenRepository(redis),
+      oneTimeTokens,
       throttle,
       sessions,
       createMailer(config),
       box,
       logger,
     );
+    // Sign-in with Google is on only when both settings are given.
+    const google =
+      config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET
+        ? new GoogleAuthProcess(
+            new GoogleProvider({
+              clientId: config.GOOGLE_CLIENT_ID,
+              clientSecret: config.GOOGLE_CLIENT_SECRET,
+              timeoutMs: config.IO_TIMEOUT_MS,
+            }),
+            sessions,
+            oneTimeTokens,
+            registrations,
+            credentials,
+            auth,
+            box,
+            logger,
+          )
+        : undefined;
     return {
       config,
       logger,
@@ -117,6 +139,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       identities,
       auth,
       access,
+      google,
       photos: new PhotoProcess(
         new PhotoService(new PhotoDbService(db, new PhotoRepository(), new EventRepository())),
         storage,

@@ -19,6 +19,11 @@ export interface RegistrationUnit {
     member: { id: string; displayName: string; email: string; locale: string },
   ): Promise<Account | null>;
   createCredential(agencyId: string, accountId: string, hash: string): Promise<void>;
+  linkIdentity(
+    agencyId: string,
+    accountId: string,
+    identity: { provider: string; subject: string; email: string },
+  ): Promise<boolean>;
   recordConsents(
     agencyId: string,
     accountId: string,
@@ -39,6 +44,17 @@ export class RegistrationDbService {
     return this.db.transaction(agencyId, (tx) => this.repository.findByEmail(tx, agencyId, email));
   }
 
+  /** The account linked to this provider identity, whatever its status. Null when none is. */
+  findByIdentity(
+    agencyId: string,
+    provider: string,
+    subject: string,
+  ): Promise<FoundAccount | null> {
+    return this.db.transaction(agencyId, (tx) =>
+      this.repository.findByIdentity(tx, agencyId, provider, subject),
+    );
+  }
+
   inTransaction<T>(agencyId: string, work: (unit: RegistrationUnit) => Promise<T>): Promise<T> {
     return this.db.transaction(agencyId, (tx) => work(this.unit(tx)));
   }
@@ -50,6 +66,8 @@ export class RegistrationDbService {
       createMember: (agencyId, member) => repo.createMember(tx, agencyId, member),
       createCredential: (agencyId, accountId, hash) =>
         repo.createCredential(tx, agencyId, accountId, hash),
+      linkIdentity: (agencyId, accountId, identity) =>
+        repo.linkIdentity(tx, agencyId, accountId, identity),
       recordConsents: (agencyId, accountId, consents) =>
         repo.recordConsents(tx, agencyId, accountId, consents),
       appendEvent: (event) => this.events.append(tx, event),

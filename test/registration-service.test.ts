@@ -45,6 +45,13 @@ interface Row {
 /** An in-memory stand-in for one transaction's worth of account storage. */
 class FakeStore {
   rows: Row[] = [];
+  identities: {
+    agencyId: string;
+    accountId: string;
+    provider: string;
+    subject: string;
+    email: string;
+  }[] = [];
   consents: { accountId: string; consent: ConsentRecord }[] = [];
   events: WorkflowEvent[] = [];
   /** Make the next insert lose a race with another request for the same email. */
@@ -54,6 +61,8 @@ class FakeStore {
 
   db = {
     findByEmail: async (agencyId: string, email: string) => this.byEmail(agencyId, email),
+    findByIdentity: async (agencyId: string, provider: string, subject: string) =>
+      this.byIdentity(agencyId, provider, subject),
     inTransaction: async <T>(_agencyId: string, work: (unit: RegistrationUnit) => Promise<T>) => {
       this.transactions += 1;
       // All or nothing, like a database transaction.
@@ -61,6 +70,7 @@ class FakeStore {
         rows: [...this.rows],
         consents: [...this.consents],
         events: [...this.events],
+        identities: [...this.identities],
       };
       try {
         return await work(this.unit());
@@ -70,6 +80,14 @@ class FakeStore {
       }
     },
   };
+
+  private byIdentity(agencyId: string, provider: string, subject: string): FoundAccount | null {
+    const link = this.identities.find(
+      (i) => i.agencyId === agencyId && i.provider === provider && i.subject === subject,
+    );
+    const row = link && this.rows.find((r) => r.account.id === link.accountId);
+    return row ? { account: row.account, status: row.status } : null;
+  }
 
   private byEmail(agencyId: string, email: string): FoundAccount | null {
     const row = this.rows.find((r) => r.agencyId === agencyId && r.email === email);
@@ -111,6 +129,17 @@ class FakeStore {
           status: 'active',
         });
         return account;
+      },
+      linkIdentity: async (agencyId, accountId, identity) => {
+        const taken = this.identities.some(
+          (i) =>
+            i.agencyId === agencyId &&
+            ((i.provider === identity.provider && i.subject === identity.subject) ||
+              (i.accountId === accountId && i.provider === identity.provider)),
+        );
+        if (taken) return false;
+        this.identities.push({ agencyId, accountId, ...identity });
+        return true;
       },
       createCredential: async (_agencyId, accountId, hash) => {
         if (this.failCredential) throw new Error('database down');
@@ -276,4 +305,99 @@ await test('what is kept for the link records the document versions in force at 
     { purpose: 'terms', documentVersion: TERMS_VERSION },
     { purpose: 'privacy', documentVersion: PRIVACY_VERSION },
   ]);
+});
+
+const google = { provider: 'google' as const, subject: 'google-sub-1', email: 'rahim@example.com' };
+
+await test('registering with Google makes a member with no password, linked to that Google identity', async () => {
+  const { store, service } = setup();
+  const result = await service.registerExternal(
+    agency,
+    { ...google, displayName: 'Rahim Uddin' },
+    registration,
+    'req-g1',
+  );
+  assert.ok(result.created);
+  assert.equal(result.account.role, 'member');
+  assert.equal(result.account.displayName, 'Rahim Uddin');
+  assert.equal(store.rows[0]!.email, 'rahim@example.com');
+  assert.equal(store.rows[0]!.passwordHash, undefined);
+  assert.deepEqual(store.identities, [
+    { agencyId: agency, accountId: result.account.id, ...google },
+  ]);
+});
+
+await test('registering with Google records the agreements and an event, in the same transaction', async () => {
+  const { store, service } = setup();
+  const result = await service.registerExternal(
+    agency,
+    { ...google, displayName: 'R' },
+    registration,
+    'req-g2',
+  );
+  assert.ok(result.created);
+  assert.deepEqual(
+    store.consents.map((c) => c.consent),
+    [
+      { purpose: 'terms', documentVersion: 'terms-v1' },
+      { purpose: 'privacy', documentVersion: 'privacy-v1' },
+    ],
+  );
+  assert.equal(store.events.length, 1);
+  assert.equal(store.events[0]!.type, 'account.registered');
+  assert.equal(store.events[0]!.correlationId, 'req-g2');
+});
+
+await test('registering with Google never takes over an email that already has an account', async () => {
+  const { store, service } = setup();
+  const existing = store.add(agency, 'rahim@example.com');
+  assert.deepEqual(
+    await service.registerExternal(agency, { ...google, displayName: 'R' }, registration, 'r'),
+    { created: false },
+  );
+  assert.equal(store.rows.length, 1);
+  assert.equal(existing.passwordHash, 'existing');
+  assert.equal(store.identities.length, 0);
+  assert.equal(store.events.length, 0);
+});
+
+await test('if the Google identity turns out to be linked already, nothing is created', async () => {
+  const { store, service } = setup();
+  const other = store.add(agency, 'someone.else@example.com');
+  store.identities.push({ agencyId: agency, accountId: other.account.id, ...google });
+  await assert.rejects(
+    () => service.registerExternal(agency, { ...google, displayName: 'R' }, registration, 'r'),
+    (error: unknown) => error instanceof Error && error.message === 'IDENTITY_ALREADY_LINKED',
+  );
+  assert.equal(store.rows.length, 1);
+  assert.equal(store.consents.length, 0);
+  assert.equal(store.events.length, 0);
+});
+
+await test('a linked Google identity finds its account, whatever its status, and only at its agency', async () => {
+  const { store, service } = setup();
+  const row = store.add(agency, 'rahim@example.com', 'disabled');
+  store.identities.push({ agencyId: agency, accountId: row.account.id, ...google });
+  const found = await service.findByIdentity(agency, 'google', 'google-sub-1');
+  assert.equal(found?.account.id, row.account.id);
+  assert.equal(found?.status, 'disabled');
+  assert.equal(await service.findByIdentity(otherAgency, 'google', 'google-sub-1'), null);
+  assert.equal(await service.findByIdentity(agency, 'google', 'another-sub'), null);
+});
+
+await test('linking Google to an existing account records an event; a second link is refused', async () => {
+  const { store, service } = setup();
+  const row = store.add(agency, 'rahim@example.com');
+  assert.equal(await service.linkIdentity(agency, row.account.id, google, 'req-l'), true);
+  assert.equal(store.events.length, 1);
+  assert.equal(store.events[0]!.type, 'auth.identity_linked');
+  assert.equal(store.events[0]!.subjectId, row.account.id);
+  // The same Google identity again, or another Google identity for the same account.
+  assert.equal(await service.linkIdentity(agency, row.account.id, google, 'r'), false);
+  assert.equal(
+    await service.linkIdentity(agency, row.account.id, { ...google, subject: 'another' }, 'r'),
+    false,
+  );
+  assert.equal(store.identities.length, 1);
+  assert.equal(store.events.length, 1);
 });

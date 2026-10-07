@@ -79,6 +79,13 @@ export class SessionRepository {
     multi.del(index);
     await multi.exec();
   }
+  /** The one-time record of a sign-in started at an outside provider (state, nonce, PKCE verifier). */
+  async putChallenge(id: string, value: string) {
+    await this.redis.set(`matrimony:challenge:${id}`, value, 'EX', 300);
+  }
+  async takeChallenge(id: string) {
+    return this.redis.getdel(`matrimony:challenge:${id}`);
+  }
   async claim(
     id: string,
     expectedCsrf: string,

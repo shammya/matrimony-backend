@@ -33,3 +33,31 @@ export const statusResponseSchema = {
   required: ['status'],
   properties: { status: { type: 'string' } },
 } as const;
+/** Where to send the browser to sign in at an outside provider. */
+export const authorizationResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['authorizationUrl'],
+  properties: { authorizationUrl: { type: 'string' } },
+} as const;
+/** Which ways of signing in this deployment offers. */
+export const methodsResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['password', 'google'],
+  properties: { password: { type: 'boolean' }, google: { type: 'boolean' } },
+} as const;
+/** The account a Google sign-in is waiting to be linked to. */
+export const pendingLinkResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['email'],
+  properties: { email: { type: 'string' } },
+} as const;
+/** The Google person waiting to agree to the terms before an account is created. */
+export const pendingSignupResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['email', 'name'],
+  properties: { email: { type: 'string' }, name: { type: 'string' } },
+} as const;

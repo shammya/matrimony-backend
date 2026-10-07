@@ -17,6 +17,8 @@ import {
 const sessionId = 'a'.repeat(43);
 const csrf = 'c'.repeat(43);
 const linkToken = 'L'.repeat(43);
+const challengeId = 'g'.repeat(43);
+const pendingId = 'p'.repeat(43);
 const tokens = { accessToken: 'access.jwt.token', csrfToken: csrf, expiresIn: 600 };
 const origin = 'http://localhost';
 
@@ -38,7 +40,14 @@ const tenantFor = (locale = 'bn') => ({
 });
 
 async function build(
-  options: { fail?: Partial<Record<string, Fail>>; config?: AppConfig; locale?: string } = {},
+  options: {
+    fail?: Partial<Record<string, Fail>>;
+    config?: AppConfig;
+    locale?: string;
+    /** Google sign-in is on unless this is false. */
+    google?: boolean;
+    outcome?: unknown;
+  } = {},
 ) {
   const calls: Record<string, unknown[][]> = {
     login: [],
@@ -49,6 +58,12 @@ async function build(
     verifyEmail: [],
     requestPasswordReset: [],
     resetPassword: [],
+    googleStart: [],
+    googleComplete: [],
+    googlePending: [],
+    googleLink: [],
+    googlePendingSignup: [],
+    googleSignup: [],
   };
   const track =
     <T>(name: string, result: T) =>
@@ -82,6 +97,37 @@ async function build(
       refresh: track('refresh', tokens) as AppDependencies['auth']['refresh'],
       logout: track('logout', undefined) as AppDependencies['auth']['logout'],
     },
+    ...(options.google === false
+      ? {}
+      : {
+          google: {
+            start: track('googleStart', {
+              challengeId: challengeId,
+              authorizationUrl: 'https://accounts.google.example/auth?state=s',
+            }) as unknown as NonNullable<AppDependencies['google']>['start'],
+            complete: track(
+              'googleComplete',
+              options.outcome ?? { kind: 'session', locale: 'bn', sessionId },
+            ) as unknown as NonNullable<AppDependencies['google']>['complete'],
+            pending: track('googlePending', {
+              email: 'rahim@example.com',
+            }) as unknown as NonNullable<AppDependencies['google']>['pending'],
+            pendingSignup: track('googlePendingSignup', {
+              email: 'rahim@example.com',
+              name: 'Rahim Uddin',
+            }) as unknown as NonNullable<AppDependencies['google']>['pendingSignup'],
+            signup: track('googleSignup', {
+              locale: 'bn',
+              sessionId,
+              ...tokens,
+            }) as unknown as NonNullable<AppDependencies['google']>['signup'],
+            link: track('googleLink', {
+              locale: 'bn',
+              sessionId,
+              ...tokens,
+            }) as unknown as NonNullable<AppDependencies['google']>['link'],
+          },
+        }),
     access: {
       startRegistration: track(
         'startRegistration',
@@ -556,4 +602,489 @@ await test('the old redirect-based routes are gone', async (t) => {
     const response = await app.inject({ url, headers: { host: 'localhost' } });
     assert.ok([401, 404].includes(response.statusCode), `${url} -> ${response.statusCode}`);
   }
+});
+
+// ---- sign in with Google --------------------------------------------------------------------
+
+const googleStartBody = {
+  intent: 'register',
+  locale: 'en',
+  acceptTerms: true,
+  acceptPrivacy: true,
+};
+
+await test('the page is told which ways of signing in are on', async (t) => {
+  const on = await build();
+  t.after(() => on.app.close());
+  assert.deepEqual(
+    (await on.app.inject({ url: '/api/v1/auth/methods', headers: { host: 'localhost' } })).json(),
+    {
+      password: true,
+      google: true,
+    },
+  );
+  const off = await build({ google: false });
+  t.after(() => off.app.close());
+  assert.deepEqual(
+    (await off.app.inject({ url: '/api/v1/auth/methods', headers: { host: 'localhost' } })).json(),
+    {
+      password: true,
+      google: false,
+    },
+  );
+});
+
+await test("starting with Google answers with Google's address and a single-use attempt cookie that Google can come back with", async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  const response = await post('/api/v1/auth/google/start', googleStartBody);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    authorizationUrl: 'https://accounts.google.example/auth?state=s',
+  });
+  const cookie = cookiesOf(response);
+  assert.match(cookie, new RegExp('^matrimony-challenge=' + challengeId));
+  assert.match(cookie, /HttpOnly/);
+  // Lax, because coming back from Google is a cross-site navigation that must carry it.
+  assert.match(cookie, /SameSite=Lax/);
+  assert.match(cookie, /Max-Age=300/);
+  assert.equal(response.body.includes(challengeId), false);
+  assert.deepEqual(calls.googleStart![0]!.slice(0, 2), [agency, 'http://localhost']);
+  assert.equal((calls.googleStart![0]![2] as { intent: string }).intent, 'register');
+});
+
+await test('logging in with Google needs no agreements, registering needs them, and says which', async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  assert.equal(
+    (await post('/api/v1/auth/google/start', { intent: 'login', locale: 'bn' })).statusCode,
+    200,
+  );
+  const missing = await post('/api/v1/auth/google/start', {
+    intent: 'register',
+    locale: 'bn',
+    onBehalfOfOther: true,
+  });
+  assert.equal(missing.statusCode, 400);
+  assert.deepEqual(fields(missing), [
+    'acceptPrivacy:required',
+    'acceptTerms:required',
+    'confirmAuthority:required',
+  ]);
+  assert.equal(calls.googleStart!.length, 1);
+});
+
+await test('starting with Google refuses other sites, extra fields and bad choices', async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  assert.equal(
+    (await post('/api/v1/auth/google/start', googleStartBody, { origin: 'https://evil.example' }))
+      .statusCode,
+    403,
+  );
+  for (const extra of [{ role: 'admin' }, { agencyId: agency }, { email: 'a@b.com' }])
+    assert.equal(
+      (await post('/api/v1/auth/google/start', { ...googleStartBody, ...extra })).statusCode,
+      400,
+    );
+  assert.equal(
+    (await post('/api/v1/auth/google/start', { ...googleStartBody, intent: 'delete' })).statusCode,
+    400,
+  );
+  assert.equal(
+    (await post('/api/v1/auth/google/start', { ...googleStartBody, locale: 'fr' })).statusCode,
+    400,
+  );
+  assert.equal(calls.googleStart!.length, 0);
+});
+
+await test('when Google cannot be reached starting says so and sets no cookie', async (t) => {
+  const { app, post } = await build({
+    fail: { googleStart: new AppError(502, 'GOOGLE_UNAVAILABLE') },
+  });
+  t.after(() => app.close());
+  const response = await post('/api/v1/auth/google/start', googleStartBody);
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.json().error.code, 'GOOGLE_UNAVAILABLE');
+  assert.equal(cookiesOf(response), '');
+});
+
+await test('without Google settings every Google route answers 404 GOOGLE_NOT_CONFIGURED', async (t) => {
+  const { app, post } = await build({ google: false });
+  t.after(() => app.close());
+  const start = await post('/api/v1/auth/google/start', googleStartBody);
+  assert.equal(start.statusCode, 404);
+  assert.equal(start.json().error.code, 'GOOGLE_NOT_CONFIGURED');
+  const link = await post(
+    '/api/v1/auth/google/link',
+    { password: 'x' },
+    { cookie: 'matrimony-link=' + pendingId },
+  );
+  assert.equal(link.statusCode, 404);
+  const pending = await app.inject({
+    url: '/api/v1/auth/google/pending',
+    headers: { host: 'localhost', cookie: 'matrimony-link=' + pendingId },
+  });
+  assert.equal(pending.statusCode, 404);
+  const back = await app.inject({
+    url: '/api/v1/auth/google/callback?code=c',
+    headers: { host: 'localhost', cookie: 'matrimony-challenge=' + challengeId },
+  });
+  assert.equal(back.statusCode, 302);
+  assert.equal(back.headers.location, '/bn/login?error=GOOGLE_NOT_CONFIGURED');
+});
+
+const comeBack = (
+  app: Awaited<ReturnType<typeof build>>['app'],
+  headers: Record<string, string> = {},
+) =>
+  app.inject({
+    url: '/api/v1/auth/google/callback?code=one-time-code&state=s',
+    headers: { host: 'localhost', cookie: 'matrimony-challenge=' + challengeId, ...headers },
+  });
+
+await test('coming back from Google signs in with a cookie and redirects, never returning tokens', async (t) => {
+  const { app, calls } = await build({ outcome: { kind: 'session', locale: 'en', sessionId } });
+  t.after(() => app.close());
+  const response = await comeBack(app);
+  assert.equal(response.statusCode, 302);
+  // The language the person was reading, not the agency's default.
+  assert.equal(response.headers.location, '/en/dashboard');
+  assert.equal(response.body, '');
+  const cookies = cookiesOf(response);
+  assert.match(cookies, new RegExp('matrimony-session=' + sessionId + '.*HttpOnly'));
+  assert.match(cookies, /matrimony-session=[^;]+;[^\n]*SameSite=Strict/);
+  assert.match(cookies, /matrimony-challenge=;/);
+  const everything = JSON.stringify(response.headers) + response.body;
+  assert.equal(everything.includes(tokens.accessToken), false);
+  assert.equal(everything.includes(tokens.csrfToken), false);
+  // The process is given the agency, the attempt, and the full address Google came back to.
+  const [agencyId, id, url] = calls.googleComplete![0]!;
+  assert.equal(agencyId, agency);
+  assert.equal(id, challengeId);
+  assert.equal(
+    (url as URL).href,
+    'http://localhost/api/v1/auth/google/callback?code=one-time-code&state=s',
+  );
+});
+
+await test('an email that already has an account goes to the password step, with a strict cookie', async (t) => {
+  const { app } = await build({ outcome: { kind: 'link', locale: 'bn', pendingId } });
+  t.after(() => app.close());
+  const response = await comeBack(app);
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, '/bn/link-google');
+  const cookies = cookiesOf(response);
+  assert.match(cookies, new RegExp('matrimony-link=' + pendingId));
+  assert.match(cookies, /matrimony-link=[^;]+;[^\n]*HttpOnly/);
+  assert.match(cookies, /matrimony-link=[^;]+;[^\n]*SameSite=Strict/);
+  assert.match(cookies, /Max-Age=600/);
+  // No session yet: nobody is signed in until the password is given.
+  assert.equal(cookies.includes('matrimony-session'), false);
+});
+
+await test('every failure coming back from Google returns to the login page with a safe code and no session', async (t) => {
+  for (const code of [
+    'GOOGLE_AUTH_FAILED',
+    'GOOGLE_EMAIL_UNVERIFIED',
+    'GOOGLE_RETRY',
+    'ACCOUNT_HAS_NO_PASSWORD',
+    'ACCOUNT_NOT_ACTIVE',
+    'OAUTH_CHALLENGE_EXPIRED',
+    'OAUTH_CONTEXT_MISMATCH',
+  ]) {
+    const { app } = await build({ fail: { googleComplete: new AppError(403, code) } });
+    t.after(() => app.close());
+    const response = await comeBack(app);
+    assert.equal(response.statusCode, 302, code);
+    assert.equal(response.headers.location, '/bn/login?error=' + code);
+    assert.equal(cookiesOf(response).includes('matrimony-session'), false);
+    assert.match(cookiesOf(response), /matrimony-challenge=;/);
+  }
+});
+
+await test('coming back with no attempt cookie goes to the login page instead of showing JSON', async (t) => {
+  const { app, calls } = await build();
+  t.after(() => app.close());
+  const response = await app.inject({
+    url: '/api/v1/auth/google/callback?code=c&state=s',
+    headers: { host: 'localhost' },
+  });
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, '/bn/login?error=INVALID_REQUEST');
+  assert.equal(calls.googleComplete!.length, 0);
+});
+
+await test('an unexpected failure coming back from Google stays a server error and leaks nothing', async (t) => {
+  const { app } = await build({
+    fail: { googleComplete: new Error('database password is hunter2') },
+  });
+  t.after(() => app.close());
+  const response = await comeBack(app);
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.json().error.code, 'INTERNAL_ERROR');
+  assert.equal(response.body.includes('hunter2'), false);
+});
+
+await test('the password step is told whose account it is, from the strict cookie alone', async (t) => {
+  const { app, calls } = await build();
+  t.after(() => app.close());
+  const ok = await app.inject({
+    url: '/api/v1/auth/google/pending',
+    headers: { host: 'localhost', cookie: 'matrimony-link=' + pendingId },
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.deepEqual(ok.json(), { email: 'rahim@example.com' });
+  assert.deepEqual(calls.googlePending![0]!.slice(0, 2), [agency, pendingId]);
+  const none = await app.inject({
+    url: '/api/v1/auth/google/pending',
+    headers: { host: 'localhost' },
+  });
+  assert.equal(none.statusCode, 400);
+  const bad = await app.inject({
+    url: '/api/v1/auth/google/pending',
+    headers: { host: 'localhost', cookie: 'matrimony-link=short' },
+  });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(calls.googlePending!.length, 1);
+});
+
+await test('approving the link with the password signs in like a login and ends the pending step', async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  const response = await post(
+    '/api/v1/auth/google/link',
+    { password: 'the right password' },
+    { cookie: 'matrimony-link=' + pendingId },
+  );
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), tokens);
+  const cookies = cookiesOf(response);
+  assert.match(cookies, new RegExp('matrimony-session=' + sessionId));
+  assert.match(cookies, /matrimony-link=;/);
+  assert.deepEqual(calls.googleLink![0]!.slice(0, 3), [agency, pendingId, 'the right password']);
+});
+
+await test('approving the link needs the same origin, the cookie and a password, and refuses extras', async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  const cookie = { cookie: 'matrimony-link=' + pendingId };
+  assert.equal(
+    (
+      await post(
+        '/api/v1/auth/google/link',
+        { password: 'x' },
+        { ...cookie, origin: 'https://evil.example' },
+      )
+    ).statusCode,
+    403,
+  );
+  assert.equal((await post('/api/v1/auth/google/link', { password: 'x' })).statusCode, 400);
+  assert.deepEqual(fields(await post('/api/v1/auth/google/link', { password: '' }, cookie)), [
+    'password:required',
+  ]);
+  assert.equal(
+    (await post('/api/v1/auth/google/link', { password: 'x', email: 'a@b.com' }, cookie))
+      .statusCode,
+    400,
+  );
+  assert.equal(calls.googleLink!.length, 0);
+});
+
+await test('a wrong password, a pause and a spent link are safe errors that sign nobody in', async (t) => {
+  for (const [error, status, code] of [
+    [new AppError(401, 'INVALID_CREDENTIALS'), 401, 'INVALID_CREDENTIALS'],
+    [new AppError(429, 'TOO_MANY_ATTEMPTS', { retryAfter: 300 }), 429, 'TOO_MANY_ATTEMPTS'],
+    [new AppError(400, 'LINK_INVALID_OR_EXPIRED'), 400, 'LINK_INVALID_OR_EXPIRED'],
+    [new AppError(409, 'GOOGLE_ALREADY_LINKED'), 409, 'GOOGLE_ALREADY_LINKED'],
+  ] as const) {
+    const { app, post } = await build({ fail: { googleLink: error } });
+    t.after(() => app.close());
+    const response = await post(
+      '/api/v1/auth/google/link',
+      { password: 'x' },
+      { cookie: 'matrimony-link=' + pendingId },
+    );
+    assert.equal(response.statusCode, status);
+    assert.equal(response.json().error.code, code);
+    assert.equal(cookiesOf(response).includes('matrimony-session'), false);
+  }
+});
+
+await test('in production the Google cookies carry the __Host- prefix and are Secure', async (t) => {
+  const production = { ...config, NODE_ENV: 'production' } as AppConfig;
+  const { app, post } = await build({ config: production });
+  t.after(() => app.close());
+  const started = await post('/api/v1/auth/google/start', googleStartBody, {
+    origin: 'https://localhost',
+  });
+  assert.match(cookiesOf(started), /^__Host-matrimony-challenge=/);
+  assert.match(cookiesOf(started), /Secure/);
+  const back = await app.inject({
+    url: '/api/v1/auth/google/callback?code=c',
+    headers: { host: 'localhost', cookie: '__Host-matrimony-challenge=' + challengeId },
+  });
+  assert.equal(back.statusCode, 302);
+  assert.match(cookiesOf(back), /__Host-matrimony-session=/);
+});
+
+await test('a failure that knows the language the person was reading returns to the login page in it', async (t) => {
+  const { GoogleSignInError } = await import('../src/process/google-auth-process.js');
+  const { app } = await build({
+    fail: { googleComplete: new GoogleSignInError(new AppError(403, 'GOOGLE_AUTH_FAILED'), 'en') },
+  });
+  t.after(() => app.close());
+  const response = await comeBack(app);
+  // The agency's default language is Bengali, but the person was reading English.
+  assert.equal(response.headers.location, '/en/login?error=GOOGLE_AUTH_FAILED');
+});
+
+// ---- a login that found no account: agree to the terms, then create ----
+
+const signupCookieHeader = { cookie: 'matrimony-signup=' + pendingId };
+
+await test('a Google login with no account goes to the agree-and-create page with a strict cookie and no session', async (t) => {
+  const { app } = await build({ outcome: { kind: 'signup', locale: 'en', pendingId } });
+  t.after(() => app.close());
+  const response = await comeBack(app);
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, '/en/signup-google');
+  const cookies = cookiesOf(response);
+  assert.match(cookies, new RegExp('matrimony-signup=' + pendingId));
+  assert.match(cookies, /matrimony-signup=[^;]+;[^\n]*HttpOnly/);
+  assert.match(cookies, /matrimony-signup=[^;]+;[^\n]*SameSite=Strict/);
+  assert.match(cookies, /Max-Age=600/);
+  assert.equal(cookies.includes('matrimony-session'), false);
+});
+
+await test('the agree-and-create page is told who is signing up, from the strict cookie alone', async (t) => {
+  const { app, calls } = await build();
+  t.after(() => app.close());
+  const ok = await app.inject({
+    url: '/api/v1/auth/google/signup',
+    headers: { host: 'localhost', ...signupCookieHeader },
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.deepEqual(ok.json(), { email: 'rahim@example.com', name: 'Rahim Uddin' });
+  assert.deepEqual(calls.googlePendingSignup![0]!.slice(0, 2), [agency, pendingId]);
+  assert.equal(
+    (await app.inject({ url: '/api/v1/auth/google/signup', headers: { host: 'localhost' } }))
+      .statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: '/api/v1/auth/google/signup',
+        headers: { host: 'localhost', cookie: 'matrimony-signup=short' },
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(calls.googlePendingSignup!.length, 1);
+});
+
+await test('agreeing creates the account and signs in like a login, and ends the step', async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  const response = await post(
+    '/api/v1/auth/google/signup',
+    { acceptTerms: true, acceptPrivacy: true },
+    signupCookieHeader,
+  );
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), tokens);
+  const cookies = cookiesOf(response);
+  assert.match(cookies, new RegExp('matrimony-session=' + sessionId));
+  assert.match(cookies, /matrimony-signup=;/);
+  const [agencyId, id, input] = calls.googleSignup![0]!;
+  assert.equal(agencyId, agency);
+  assert.equal(id, pendingId);
+  assert.deepEqual(input, {
+    acceptTerms: true,
+    acceptPrivacy: true,
+    onBehalfOfOther: false,
+    confirmAuthority: false,
+  });
+});
+
+await test('creating needs both agreements, and the confirmation when registering for someone else, and says which', async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  const none = await post('/api/v1/auth/google/signup', {}, signupCookieHeader);
+  assert.equal(none.statusCode, 400);
+  assert.deepEqual(fields(none), ['acceptPrivacy:required', 'acceptTerms:required']);
+  const someone = await post(
+    '/api/v1/auth/google/signup',
+    { acceptTerms: true, acceptPrivacy: true, onBehalfOfOther: true },
+    signupCookieHeader,
+  );
+  assert.deepEqual(fields(someone), ['confirmAuthority:required']);
+  assert.equal(calls.googleSignup!.length, 0);
+});
+
+await test('creating refuses other sites, a missing cookie and extra fields, so a name or email cannot be sent', async (t) => {
+  const { app, calls, post } = await build();
+  t.after(() => app.close());
+  const body = { acceptTerms: true, acceptPrivacy: true };
+  assert.equal(
+    (
+      await post('/api/v1/auth/google/signup', body, {
+        ...signupCookieHeader,
+        origin: 'https://evil.example',
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal((await post('/api/v1/auth/google/signup', body)).statusCode, 400);
+  for (const extra of [
+    { email: 'a@b.com' },
+    { name: 'X' },
+    { role: 'admin' },
+    { agencyId: agency },
+  ])
+    assert.equal(
+      (await post('/api/v1/auth/google/signup', { ...body, ...extra }, signupCookieHeader))
+        .statusCode,
+      400,
+    );
+  assert.equal(calls.googleSignup!.length, 0);
+});
+
+await test('an expired step, and an address that got an account meanwhile, are safe errors that sign nobody in', async (t) => {
+  for (const [error, status, code] of [
+    [new AppError(400, 'LINK_INVALID_OR_EXPIRED'), 400, 'LINK_INVALID_OR_EXPIRED'],
+    [new AppError(409, 'GOOGLE_RETRY'), 409, 'GOOGLE_RETRY'],
+  ] as const) {
+    const { app, post } = await build({ fail: { googleSignup: error } });
+    t.after(() => app.close());
+    const response = await post(
+      '/api/v1/auth/google/signup',
+      { acceptTerms: true, acceptPrivacy: true },
+      signupCookieHeader,
+    );
+    assert.equal(response.statusCode, status);
+    assert.equal(response.json().error.code, code);
+    assert.equal(cookiesOf(response).includes('matrimony-session'), false);
+  }
+});
+
+await test('without Google settings the agree-and-create routes answer 404 too', async (t) => {
+  const { app, post } = await build({ google: false });
+  t.after(() => app.close());
+  const get = await app.inject({
+    url: '/api/v1/auth/google/signup',
+    headers: { host: 'localhost', ...signupCookieHeader },
+  });
+  assert.equal(get.statusCode, 404);
+  assert.equal(
+    (
+      await post(
+        '/api/v1/auth/google/signup',
+        { acceptTerms: true, acceptPrivacy: true },
+        signupCookieHeader,
+      )
+    ).statusCode,
+    404,
+  );
 });

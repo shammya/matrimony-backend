@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 
-export type TokenPurpose = 'registration' | 'password-reset';
+export type TokenPurpose = 'registration' | 'password-reset' | 'google-link' | 'google-signup';
 
 /**
  * Single-use secrets that travel by email (a link to open). Only the SHA-256 of the secret is
@@ -38,6 +38,11 @@ export class OneTimeTokenRepository {
     multi.set(pointer, digest, 'EX', ttlSeconds);
     const results = await multi.exec();
     if (!results || results.some(([error]) => error)) throw new Error('Token storage failed');
+  }
+
+  /** Returns the stored payload without using it up, for a step that may be retried (a mistyped password). */
+  peek(purpose: TokenPurpose, digest: string): Promise<string | null> {
+    return this.redis.get(this.key(purpose, digest));
   }
 
   /** Returns the stored payload and removes it in one step, or null if it is unknown or expired. */

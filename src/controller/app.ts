@@ -9,6 +9,7 @@ import type { Logger } from 'pino';
 import type { AppConfig } from '../config/env.js';
 import type { AuthProcess } from '../process/auth-process.js';
 import type { AccountAccessProcess } from '../process/account-access-process.js';
+import type { GoogleAuthProcess } from '../process/google-auth-process.js';
 import type { IdentityService } from '../service/identity-service.js';
 import { bearerSchema, selfResponseSchema } from '../io/http/contracts.js';
 import { accountResponse } from '../factory/account-response.js';
@@ -43,6 +44,11 @@ export interface AppDependencies {
   logger: Logger;
   redis: Redis;
   auth: Pick<AuthProcess, 'login' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'>;
+  /** Undefined when Google sign-in is not configured. */
+  google?: Pick<
+    GoogleAuthProcess,
+    'start' | 'complete' | 'pending' | 'link' | 'pendingSignup' | 'signup'
+  >;
   access: Pick<
     AccountAccessProcess,
     'startRegistration' | 'verifyEmail' | 'requestPasswordReset' | 'resetPassword'
@@ -164,7 +170,7 @@ export async function buildApp(deps: AppDependencies) {
   app.get('/api/v1/me', { schema: { response: { 200: selfResponseSchema } } }, async (req) =>
     accountResponse(req.principal!),
   );
-  registerAuthController(app, deps.auth, deps.access, config);
+  registerAuthController(app, deps.auth, deps.google, deps.access, config);
   registerProfileController(app, deps.profiles);
   registerPhotoController(app, deps.photos);
   registerReviewController(app, deps.reviews);

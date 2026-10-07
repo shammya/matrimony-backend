@@ -213,6 +213,177 @@ paths:
         '403': { $ref: '#/components/responses/Error403' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /api/v1/auth/methods:
+    get:
+      tags: [Auth]
+      summary: Which ways of signing in are on
+      description: |
+        Public. The pages use it to show only buttons that work. `google` is false until the
+        Google client id and secret are configured.
+      responses:
+        '200':
+          description: The sign-in methods offered by this deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthMethods' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+
+  /api/v1/auth/google/start:
+    post:
+      tags: [Auth]
+      summary: Start signing in or registering with Google
+      description: |
+        Public, 10 per minute per client address, same-origin only. Registering needs the same
+        agreements as an email registration, checked here before the person leaves. Nothing is
+        created yet. Sets the 5-minute single-use `matrimony-challenge` cookie (HttpOnly, Lax,
+        because Google sends the browser back from another site) and returns Google's address,
+        which carries PKCE, state and nonce. 404 `GOOGLE_NOT_CONFIGURED` when Google is off;
+        502 `GOOGLE_UNAVAILABLE` when Google cannot be reached.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoogleStartInput' }
+      responses:
+        '200':
+          description: Where to send the browser.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizationUrl' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/google/callback:
+    get:
+      tags: [Auth]
+      summary: Where Google sends the browser back
+      description: |
+        Public, 10 per minute. Needs the attempt cookie, which is single use. Never returns
+        tokens. The identity must come with an email Google has confirmed.
+        An identity already linked signs in. Otherwise, an email that already has an account is
+        never linked on the email alone: the browser goes to `/{locale}/link-google` to give that
+        account's password (see `/auth/google/link`). Otherwise a registration creates a member
+        (no password). A login that finds no account creates nothing: the browser goes to
+        `/{locale}/signup-google` to agree to the terms first (see `/auth/google/signup`).
+      responses:
+        '302':
+          description: |
+            Signed in: `Location: /{locale}/dashboard` and the `matrimony-session` cookie is set.
+            Needs the account's password: `Location: /{locale}/link-google` and the strict
+            `matrimony-link` cookie is set (10 minutes). No account yet:
+            `Location: /{locale}/signup-google` and the strict `matrimony-signup` cookie is set
+            (10 minutes). Failure:
+            `Location: /{locale}/login?error=<code>` with GOOGLE_AUTH_FAILED,
+            GOOGLE_EMAIL_UNVERIFIED, ACCOUNT_HAS_NO_PASSWORD, ACCOUNT_NOT_ACTIVE,
+            OAUTH_CHALLENGE_EXPIRED, OAUTH_CONTEXT_MISMATCH, GOOGLE_RETRY, INVALID_REQUEST or
+            GOOGLE_NOT_CONFIGURED. `{locale}` is the language the person was reading.
+          headers:
+            Location:
+              schema: { type: string }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/google/pending:
+    get:
+      tags: [Auth]
+      summary: Whose account is waiting for its password
+      description: |
+        Public, 20 per minute. Needs the `matrimony-link` cookie. Returns the email of the account
+        the Google sign-in is waiting to be linked to, so the page can ask for its password.
+        400 `LINK_INVALID_OR_EXPIRED` when there is none.
+      responses:
+        '200':
+          description: The account waiting to be linked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingGoogleLink' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/google/signup:
+    get:
+      tags: [Auth]
+      summary: Who Google says is signing up
+      description: |
+        Public, 20 per minute. Needs the `matrimony-signup` cookie. Returns the email and name
+        Google vouched for, so the page can ask the person to agree to the terms before an account
+        is created. 400 `LINK_INVALID_OR_EXPIRED` when there is none.
+      responses:
+        '200':
+          description: The Google person waiting to agree.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingGoogleSignup' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [Auth]
+      summary: Agree to the terms, create the account, and sign in
+      description: |
+        Public, 10 per minute, same-origin only. Needs the `matrimony-signup` cookie. The account
+        is created as a member (no password) from the name and email Google vouched for, never from
+        the request, with the consents and the registration event, and a session starts exactly like
+        a login. Missing agreements are 400 with the field code `required` and leave the step open;
+        any other outcome ends it. 409 `GOOGLE_RETRY` when an account for the address appeared in
+        the meantime (Google sign-in will then find it).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoogleSignupInput' }
+      responses:
+        '200':
+          description: Account created and signed in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: An account for the address appeared meanwhile (GOOGLE_RETRY).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/google/link:
+    post:
+      tags: [Auth]
+      summary: Link Google to the account with its password, and sign in
+      description: |
+        Public, 10 per minute, same-origin only. Needs the `matrimony-link` cookie. The password
+        is checked like at sign-in, and a wrong one counts toward the same pause (429
+        `TOO_MANY_ATTEMPTS`). A wrong password leaves the step open to retry; success links Google,
+        records `auth.identity_linked`, ends the step and starts a session exactly like a login.
+        409 `GOOGLE_ALREADY_LINKED` when the account already has a Google identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoogleLinkInput' }
+      responses:
+        '200':
+          description: Linked and signed in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /api/v1/auth/session:
     post:
       tags: [Session]
@@ -1472,6 +1643,60 @@ components:
         status:
           type: string
           description: A short machine-readable outcome, such as `verification_sent` or `verified`.
+    AuthMethods:
+      type: object
+      required: [password, google]
+      properties:
+        password: { type: boolean }
+        google: { type: boolean }
+    AuthorizationUrl:
+      type: object
+      required: [authorizationUrl]
+      properties:
+        authorizationUrl: { type: string }
+    PendingGoogleLink:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string }
+    PendingGoogleSignup:
+      type: object
+      required: [email, name]
+      properties:
+        email: { type: string }
+        name: { type: string }
+    GoogleSignupInput:
+      type: object
+      additionalProperties: false
+      description: |
+        `acceptTerms` and `acceptPrivacy` must be true, and `confirmAuthority` when
+        `onBehalfOfOther` is true; problems come back as the field code `required`.
+      properties:
+        acceptTerms: { type: boolean, default: false }
+        acceptPrivacy: { type: boolean, default: false }
+        onBehalfOfOther: { type: boolean, default: false }
+        confirmAuthority: { type: boolean, default: false }
+    GoogleLinkInput:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password: { type: string, minLength: 1, maxLength: 256 }
+    GoogleStartInput:
+      type: object
+      additionalProperties: false
+      required: [intent, locale]
+      description: |
+        Starting a sign-in with Google. Registering needs `acceptTerms` and `acceptPrivacy` to be
+        true, and `confirmAuthority` when `onBehalfOfOther` is true; their problems come back as the
+        field code `required`. The name and the email come from Google, never from the request.
+      properties:
+        intent: { type: string, enum: [login, register] }
+        locale: { type: string, enum: [bn, en], description: The language the person is reading. }
+        acceptTerms: { type: boolean, default: false }
+        acceptPrivacy: { type: boolean, default: false }
+        onBehalfOfOther: { type: boolean, default: false }
+        confirmAuthority: { type: boolean, default: false }
     LinkToken:
       type: object
       additionalProperties: false
@@ -1823,6 +2048,10 @@ components:
                 UNSUPPORTED_MEDIA_TYPE, and for signing in and email links: INVALID_CREDENTIALS,
                 TOO_MANY_ATTEMPTS (with details.retryAfter, seconds), EMAIL_RATE_LIMITED (with
                 details.retryAfter, seconds), LINK_INVALID_OR_EXPIRED, and
+                for Google: GOOGLE_NOT_CONFIGURED, GOOGLE_UNAVAILABLE, GOOGLE_AUTH_FAILED,
+                GOOGLE_EMAIL_UNVERIFIED (Google has not confirmed the email), ACCOUNT_HAS_NO_PASSWORD (the account has no
+                password to approve a link with), GOOGLE_ALREADY_LINKED, GOOGLE_RETRY, OAUTH_CHALLENGE_EXPIRED,
+                OAUTH_CONTEXT_MISMATCH, and
                 for staff: REVIEW_NOT_FOUND, REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED,
                 REVIEW_OUT_OF_DATE, REVIEW_OWN_SUBMISSION, PROFILE_SELF_SERVICE,
                 STATUS_CHANGE_NOT_ALLOWED, AGENT_NOT_AVAILABLE.

@@ -5,6 +5,7 @@ import { pino } from 'pino';
 import { Pool } from 'pg';
 import { Redis } from 'ioredis';
 import { migrate } from '../../scripts/migrate.js';
+import { AppError } from '../../src/exception/app-error.js';
 import { loadConfig } from '../../src/config/env.js';
 import { buildApp } from '../../src/controller/app.js';
 import { OneTimeTokenRepository } from '../../src/cache/repository/one-time-token-repository.js';
@@ -21,6 +22,8 @@ import { IdentityDbService } from '../../src/db/service/identity-db-service.js';
 import { RegistrationDbService } from '../../src/db/service/registration-db-service.js';
 import type { MailMessage } from '../../src/mail/mailer.js';
 import { AccountAccessProcess } from '../../src/process/account-access-process.js';
+import { GoogleAuthProcess } from '../../src/process/google-auth-process.js';
+import type { GoogleIdentityProvider, GoogleProfile } from '../../src/security/google-provider.js';
 import { AuthProcess } from '../../src/process/auth-process.js';
 import { AccessTokens, parseSigningKey } from '../../src/security/access-token.js';
 import { PasswordHasher } from '../../src/security/password-hasher.js';
@@ -95,12 +98,39 @@ await test('the whole email and password journey over HTTP', async (t) => {
       maxSessions: config.MAX_SESSIONS_PER_ACCOUNT,
     },
   );
-  const access = new AccountAccessProcess(
-    new RegistrationService(
-      new RegistrationDbService(db, new RegistrationRepository(), new EventRepository()),
-    ),
+  const registrations = new RegistrationService(
+    new RegistrationDbService(db, new RegistrationRepository(), new EventRepository()),
+  );
+  const oneTimeTokens = new OneTimeTokenRepository(redis);
+  // Google itself cannot be reached from a test: a person is signed in "at Google" by setting who
+  // they are. Everything of ours (the attempt, the cookies, the accounts, the sessions) is real.
+  let googleProfile: GoogleProfile | Error = {
+    subject: 'google-default',
+    email: 'default@example.com',
+    emailVerified: true,
+    name: 'Default Person',
+  };
+  const fakeGoogle: GoogleIdentityProvider = {
+    authorize: async (attempt) => `https://accounts.google.example/auth?state=${attempt.state}`,
+    exchange: async () => {
+      if (googleProfile instanceof Error) throw googleProfile;
+      return googleProfile;
+    },
+  };
+  const google = new GoogleAuthProcess(
+    fakeGoogle,
+    sessions,
+    oneTimeTokens,
+    registrations,
     credentials,
-    new OneTimeTokenRepository(redis),
+    auth,
+    new SecretBox(config.SESSION_ENCRYPTION_KEY),
+    pino({ level: 'silent' }),
+  );
+  const access = new AccountAccessProcess(
+    registrations,
+    credentials,
+    oneTimeTokens,
     throttle,
     sessions,
     {
@@ -123,6 +153,7 @@ await test('the whole email and password journey over HTTP', async (t) => {
     identities,
     auth,
     access,
+    google,
   });
   t.after(async () => {
     await app.close();
@@ -436,6 +467,452 @@ await test('the whole email and password journey over HTTP', async (t) => {
       assert.equal((await me(one, a.json().accessToken)).statusCode, 401);
       assert.equal((await me(two, b.json().accessToken)).statusCode, 200);
       assert.equal((await me(three, c.json().accessToken)).statusCode, 200);
+    },
+  );
+
+  // ---- sign in with Google ----
+  const cookieFrom = (response: { headers: Record<string, unknown> }, name: string) =>
+    new RegExp(name + '=([^;]*)').exec([response.headers['set-cookie']].flat().join(';'))?.[1] ??
+    '';
+  const person = (name: string, over: Partial<GoogleProfile> = {}): GoogleProfile => ({
+    subject: `sub-${name}-${run}`,
+    email: email(name),
+    emailVerified: true,
+    name: `Person ${name}`,
+    ...over,
+  });
+  /** Start at our site, "go to Google" and come back, carrying only the cookie we set. */
+  async function viaGoogle(
+    visit: ReturnType<typeof as>,
+    who: GoogleProfile | Error,
+    intent: 'login' | 'register' = 'login',
+  ) {
+    googleProfile = who;
+    const started = await visit('POST', '/api/v1/auth/google/start', {
+      body: { intent, locale: 'en', acceptTerms: true, acceptPrivacy: true },
+    });
+    assert.equal(started.statusCode, 200, started.body);
+    const challenge = cookieFrom(started, 'matrimony-challenge');
+    assert.equal(challenge.length, 43);
+    return visit('GET', '/api/v1/auth/google/callback?code=c&state=s', {
+      headers: { cookie: `matrimony-challenge=${challenge}` },
+    });
+  }
+  /** The tokens of a session that a redirect just set the cookie for, as the page asks for them. */
+  async function tokensFor(
+    visit: ReturnType<typeof as>,
+    response: { headers: Record<string, unknown> },
+  ) {
+    const session = cookieFrom(response, 'matrimony-session');
+    assert.equal(session.length, 43);
+    const restored = await visit('POST', '/api/v1/auth/session', {
+      headers: { cookie: `matrimony-session=${session}` },
+    });
+    assert.equal(restored.statusCode, 200);
+    return restored.json();
+  }
+
+  await t.test('Google: register, then sign in again, with the same account', async () => {
+    const visit = as();
+    const registered = await viaGoogle(visit, person('gnew'), 'register');
+    assert.equal(registered.statusCode, 302);
+    assert.equal(registered.headers.location, '/en/dashboard');
+    const { accessToken } = await tokensFor(visit, registered);
+    const profile = await me(visit, accessToken);
+    assert.equal(profile.statusCode, 200);
+    assert.equal(profile.json().role, 'member');
+    assert.equal(profile.json().displayName, 'Person gnew');
+
+    // A later sign-in with Google reaches the same account, and no second one exists.
+    const again = await viaGoogle(as(), person('gnew'), 'login');
+    assert.equal(again.headers.location, '/en/dashboard');
+    const second = await tokensFor(as(), again);
+    assert.equal((await me(as(), second.accessToken)).json().id, profile.json().id);
+    const accounts = await admin.query(
+      'SELECT count(*)::int AS n FROM matrimony.accounts WHERE email=$1',
+      [email('gnew')],
+    );
+    assert.equal(accounts.rows[0].n, 1);
+  });
+
+  await t.test(
+    'Google: the account has no password, and "forgot password" can give it one',
+    async () => {
+      const visit = as();
+      await viaGoogle(visit, person('gpass'), 'register');
+      const row = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.account_credentials c JOIN matrimony.accounts a ON a.id=c.account_id WHERE a.email=$1',
+        [email('gpass')],
+      );
+      assert.equal(row.rows[0].n, 0);
+      assert.equal((await logIn(as(), 'gpass', 'any password at all')).statusCode, 401);
+
+      await as()('POST', '/api/v1/auth/password/forgot', { body: { email: email('gpass') } });
+      await settle();
+      const reset = await as()('POST', '/api/v1/auth/password/reset', {
+        body: { token: tokenIn(lastMail(email('gpass'))), password: 'a password set later on' },
+      });
+      assert.equal(reset.statusCode, 200);
+      assert.equal((await logIn(as(), 'gpass', 'a password set later on')).statusCode, 200);
+      // And Google still works for the same account.
+      const again = await viaGoogle(as(), person('gpass'));
+      assert.equal(again.headers.location, '/en/dashboard');
+    },
+  );
+
+  await t.test(
+    'Google: a login with no account creates nothing until the terms are agreed to, then creates it',
+    async () => {
+      const visit = as();
+      const response = await viaGoogle(
+        visit,
+        person('gnone', { name: 'Nina From Google' }),
+        'login',
+      );
+      // No account and no session yet: the person is asked to agree first.
+      assert.equal(response.statusCode, 302);
+      assert.equal(response.headers.location, '/en/signup-google');
+      assert.equal(cookieFrom(response, 'matrimony-session'), '');
+      const signup = cookieFrom(response, 'matrimony-signup');
+      assert.equal(signup.length, 43);
+      const cookie = { cookie: `matrimony-signup=${signup}` };
+      const none = () =>
+        admin.query('SELECT count(*)::int AS n FROM matrimony.accounts WHERE email=$1', [
+          email('gnone'),
+        ]);
+      assert.equal((await none()).rows[0].n, 0);
+
+      // The page is told who Google says this is, and nothing else.
+      const pending = await visit('GET', '/api/v1/auth/google/signup', { headers: cookie });
+      assert.deepEqual(pending.json(), { email: email('gnone'), name: 'Nina From Google' });
+
+      // Without the agreements nothing is created, and the step stays open.
+      const refused = await visit('POST', '/api/v1/auth/google/signup', {
+        body: {},
+        headers: cookie,
+      });
+      assert.equal(refused.statusCode, 400);
+      assert.equal((await none()).rows[0].n, 0);
+
+      // Agreeing creates the member (no password) from Google's name and email, and signs in.
+      const agreed = await visit('POST', '/api/v1/auth/google/signup', {
+        body: { acceptTerms: true, acceptPrivacy: true },
+        headers: cookie,
+      });
+      assert.equal(agreed.statusCode, 200);
+      assert.equal(cookieFrom(agreed, 'matrimony-session').length, 43);
+      const profile = await me(visit, agreed.json().accessToken);
+      assert.equal(profile.statusCode, 200);
+      assert.equal(profile.json().role, 'member');
+      assert.equal(profile.json().displayName, 'Nina From Google');
+
+      const row = await admin.query(
+        `SELECT a.id, (SELECT count(*)::int FROM matrimony.account_credentials c WHERE c.account_id=a.id) AS passwords,
+              (SELECT count(*)::int FROM matrimony.account_identities i WHERE i.account_id=a.id) AS identities,
+              (SELECT count(*)::int FROM matrimony.consent_events e WHERE e.account_id=a.id) AS consents
+       FROM matrimony.accounts a WHERE a.email=$1`,
+        [email('gnone')],
+      );
+      assert.equal(row.rows.length, 1);
+      assert.deepEqual(
+        {
+          passwords: row.rows[0].passwords,
+          identities: row.rows[0].identities,
+          consents: row.rows[0].consents,
+        },
+        { passwords: 0, identities: 1, consents: 2 },
+      );
+
+      // The step is spent: pressing again cannot create a second account.
+      const again = await visit('POST', '/api/v1/auth/google/signup', {
+        body: { acceptTerms: true, acceptPrivacy: true },
+        headers: cookie,
+      });
+      assert.equal(again.statusCode, 400);
+      assert.equal((await none()).rows[0].n, 1);
+
+      // And from now on, Google signs in directly.
+      const next = await viaGoogle(as(), person('gnone'), 'login');
+      assert.equal(next.headers.location, '/en/dashboard');
+    },
+  );
+
+  await t.test(
+    'Google: the agree-and-create step belongs to the agency it started at, and is never taken from the request',
+    async () => {
+      const visit = as();
+      const response = await viaGoogle(
+        visit,
+        person('gscope', { name: 'Real Google Name' }),
+        'login',
+      );
+      const signup = cookieFrom(response, 'matrimony-signup');
+      const cookie = { cookie: `matrimony-signup=${signup}` };
+      const elsewhere = await as('other.localhost')('POST', '/api/v1/auth/google/signup', {
+        body: { acceptTerms: true, acceptPrivacy: true },
+        headers: cookie,
+      });
+      assert.equal(elsewhere.statusCode, 400);
+      // Names, emails and roles in the request are refused; the account uses what Google said.
+      const sneaky = await visit('POST', '/api/v1/auth/google/signup', {
+        body: {
+          acceptTerms: true,
+          acceptPrivacy: true,
+          email: 'someone.else@example.com',
+          role: 'admin',
+        },
+        headers: cookie,
+      });
+      assert.equal(sneaky.statusCode, 400);
+      const created = await visit('POST', '/api/v1/auth/google/signup', {
+        body: { acceptTerms: true, acceptPrivacy: true },
+        headers: cookie,
+      });
+      assert.equal(created.statusCode, 200);
+      const profile = await me(visit, created.json().accessToken);
+      assert.equal(profile.json().displayName, 'Real Google Name');
+      assert.equal(profile.json().role, 'member');
+      const rows = await admin.query('SELECT email FROM matrimony.accounts WHERE email=ANY($1)', [
+        [email('gscope'), 'someone.else@example.com'],
+      ]);
+      assert.deepEqual(
+        rows.rows.map((r) => r.email),
+        [email('gscope')],
+      );
+    },
+  );
+
+  await t.test(
+    'Google: an address that got an account while the step was open is not given a second one',
+    async () => {
+      const visit = as();
+      const response = await viaGoogle(visit, person('graced'), 'login');
+      const cookie = { cookie: `matrimony-signup=${cookieFrom(response, 'matrimony-signup')}` };
+      await signUp('graced');
+      const late = await visit('POST', '/api/v1/auth/google/signup', {
+        body: { acceptTerms: true, acceptPrivacy: true },
+        headers: cookie,
+      });
+      assert.equal(late.statusCode, 409);
+      assert.equal(late.json().error.code, 'GOOGLE_RETRY');
+      assert.equal(cookieFrom(late, 'matrimony-session'), '');
+      const rows = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.accounts WHERE email=$1',
+        [email('graced')],
+      );
+      assert.equal(rows.rows[0].n, 1);
+      const identities = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.account_identities WHERE provider_subject=$1',
+        [`sub-graced-${run}`],
+      );
+      assert.equal(identities.rows[0].n, 0);
+    },
+  );
+
+  await t.test('Google: an email Google has not confirmed is refused everywhere', async () => {
+    await signUp('gunv');
+    for (const intent of ['login', 'register'] as const) {
+      const response = await viaGoogle(as(), person('gunv', { emailVerified: false }), intent);
+      assert.equal(response.headers.location, '/en/login?error=GOOGLE_EMAIL_UNVERIFIED');
+      assert.equal(cookieFrom(response, 'matrimony-session'), '');
+      assert.equal(cookieFrom(response, 'matrimony-link'), '');
+    }
+    const fresh = await viaGoogle(as(), person('gunv2', { emailVerified: false }), 'register');
+    assert.equal(fresh.headers.location, '/en/login?error=GOOGLE_EMAIL_UNVERIFIED');
+    const rows = await admin.query(
+      'SELECT count(*)::int AS n FROM matrimony.accounts WHERE email=$1',
+      [email('gunv2')],
+    );
+    assert.equal(rows.rows[0].n, 0);
+  });
+
+  await t.test(
+    'Google: it is never attached to an existing account by the email alone',
+    async () => {
+      await signUp('gtake', 'the real owners password');
+      const attacker = as();
+      const response = await viaGoogle(
+        attacker,
+        person('gtake', { subject: `sub-attacker-${run}` }),
+        'login',
+      );
+      // Not signed in, and nothing linked: the person is asked for the account's password.
+      assert.equal(response.headers.location, '/en/link-google');
+      assert.equal(cookieFrom(response, 'matrimony-session'), '');
+      const link = cookieFrom(response, 'matrimony-link');
+      assert.equal(link.length, 43);
+      const identities = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.account_identities i JOIN matrimony.accounts a ON a.id=i.account_id WHERE a.email=$1',
+        [email('gtake')],
+      );
+      assert.equal(identities.rows[0].n, 0);
+
+      const pending = await attacker('GET', '/api/v1/auth/google/pending', {
+        headers: { cookie: `matrimony-link=${link}` },
+      });
+      assert.deepEqual(pending.json(), { email: email('gtake') });
+
+      // The attacker does not know the password: refused, still not linked, and signed in nowhere.
+      const wrong = await attacker('POST', '/api/v1/auth/google/link', {
+        body: { password: 'a guess' },
+        headers: { cookie: `matrimony-link=${link}` },
+      });
+      assert.equal(wrong.statusCode, 401);
+      assert.equal(cookieFrom(wrong, 'matrimony-session'), '');
+      const afterWrong = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.account_identities i JOIN matrimony.accounts a ON a.id=i.account_id WHERE a.email=$1',
+        [email('gtake')],
+      );
+      assert.equal(afterWrong.rows[0].n, 0);
+    },
+  );
+
+  await t.test(
+    'Google: the owner approves the link with the password, then both ways work',
+    async () => {
+      await signUp('glink', 'the owners password');
+      const visit = as();
+      const response = await viaGoogle(visit, person('glink'), 'login');
+      const link = cookieFrom(response, 'matrimony-link');
+      const approved = await visit('POST', '/api/v1/auth/google/link', {
+        body: { password: 'the owners password' },
+        headers: { cookie: `matrimony-link=${link}` },
+      });
+      assert.equal(approved.statusCode, 200);
+      const { accessToken } = approved.json();
+      assert.equal((await me(visit, accessToken)).statusCode, 200);
+      assert.equal((await me(visit, accessToken)).json().displayName, 'Member glink');
+
+      // The link step cannot be used a second time.
+      const reused = await visit('POST', '/api/v1/auth/google/link', {
+        body: { password: 'the owners password' },
+        headers: { cookie: `matrimony-link=${link}` },
+      });
+      assert.equal(reused.statusCode, 400);
+
+      // Now Google signs in directly, to the same account, and the password still works.
+      const direct = await viaGoogle(as(), person('glink'), 'login');
+      assert.equal(direct.headers.location, '/en/dashboard');
+      const second = await tokensFor(as(), direct);
+      assert.equal(
+        (await me(as(), second.accessToken)).json().id,
+        (await me(visit, accessToken)).json().id,
+      );
+      assert.equal((await logIn(as(), 'glink', 'the owners password')).statusCode, 200);
+      const events = await admin.query(
+        "SELECT count(*)::int AS n FROM matrimony.event_outbox WHERE event->>'type'='auth.identity_linked' AND event->>'subjectId'=(SELECT id::text FROM matrimony.accounts WHERE email=$1)",
+        [email('glink')],
+      );
+      assert.equal(events.rows[0].n, 1);
+    },
+  );
+
+  await t.test(
+    'Google: wrong passwords at the link step share the same pause as signing in',
+    async () => {
+      await signUp('gpause', 'the owners password');
+      const visit = as();
+      const response = await viaGoogle(visit, person('gpause'), 'login');
+      const link = cookieFrom(response, 'matrimony-link');
+      for (let i = 0; i < 5; i++) {
+        const wrong = await as()('POST', '/api/v1/auth/google/link', {
+          body: { password: 'wrong guess' },
+          headers: { cookie: `matrimony-link=${link}` },
+        });
+        assert.equal(wrong.statusCode, 401);
+      }
+      // Even the right password is refused during the pause, here and at the ordinary sign-in.
+      const paused = await as()('POST', '/api/v1/auth/google/link', {
+        body: { password: 'the owners password' },
+        headers: { cookie: `matrimony-link=${link}` },
+      });
+      assert.equal(paused.statusCode, 429);
+      assert.equal((await logIn(as(), 'gpause', 'the owners password')).statusCode, 429);
+    },
+  );
+
+  await t.test(
+    'Google: an account with no password cannot be linked, and a disabled one cannot sign in',
+    async () => {
+      await viaGoogle(as(), person('gonly'), 'register');
+      const other = await viaGoogle(
+        as(),
+        person('gonly', { subject: `sub-other-${run}` }),
+        'login',
+      );
+      assert.equal(other.headers.location, '/en/login?error=ACCOUNT_HAS_NO_PASSWORD');
+
+      await admin.query("UPDATE matrimony.accounts SET status='disabled' WHERE email=$1", [
+        email('gonly'),
+      ]);
+      const blocked = await viaGoogle(as(), person('gonly'), 'login');
+      assert.equal(blocked.headers.location, '/en/login?error=ACCOUNT_NOT_ACTIVE');
+      assert.equal(cookieFrom(blocked, 'matrimony-session'), '');
+    },
+  );
+
+  await t.test(
+    'Google: a failed or cancelled sign-in goes back to login, and an attempt cannot be replayed',
+    async () => {
+      const failed = await viaGoogle(as(), new AppError(401, 'GOOGLE_AUTH_FAILED'), 'login');
+      assert.equal(failed.headers.location, '/en/login?error=GOOGLE_AUTH_FAILED');
+
+      const visit = as();
+      googleProfile = person('greplay');
+      const started = await visit('POST', '/api/v1/auth/google/start', {
+        body: { intent: 'register', locale: 'bn', acceptTerms: true, acceptPrivacy: true },
+      });
+      const challenge = cookieFrom(started, 'matrimony-challenge');
+      const cookie = `matrimony-challenge=${challenge}`;
+      const first = await visit('GET', '/api/v1/auth/google/callback?code=c&state=s', {
+        headers: { cookie },
+      });
+      assert.equal(first.headers.location, '/bn/dashboard');
+      const replay = await visit('GET', '/api/v1/auth/google/callback?code=c&state=s', {
+        headers: { cookie },
+      });
+      assert.equal(replay.headers.location, '/bn/login?error=OAUTH_CHALLENGE_EXPIRED');
+      assert.equal(cookieFrom(replay, 'matrimony-session'), '');
+      const accounts = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.accounts WHERE email=$1',
+        [email('greplay')],
+      );
+      assert.equal(accounts.rows[0].n, 1);
+    },
+  );
+
+  await t.test(
+    'Google: an attempt started at one agency cannot be finished at another',
+    async () => {
+      const visit = as();
+      googleProfile = person('gtenant');
+      const started = await visit('POST', '/api/v1/auth/google/start', {
+        body: { intent: 'register', locale: 'bn', acceptTerms: true, acceptPrivacy: true },
+      });
+      const cookie = `matrimony-challenge=${cookieFrom(started, 'matrimony-challenge')}`;
+      const elsewhere = await as('other.localhost')(
+        'GET',
+        '/api/v1/auth/google/callback?code=c&state=s',
+        { headers: { cookie } },
+      );
+      assert.equal(elsewhere.headers.location, '/bn/login?error=OAUTH_CONTEXT_MISMATCH');
+      const rows = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.accounts WHERE email=$1',
+        [email('gtenant')],
+      );
+      assert.equal(rows.rows[0].n, 0);
+    },
+  );
+
+  await t.test(
+    'Google: registering needs the agreements, checked before leaving for Google',
+    async () => {
+      const visit = as();
+      const missing = await visit('POST', '/api/v1/auth/google/start', {
+        body: { intent: 'register', locale: 'bn' },
+      });
+      assert.equal(missing.statusCode, 400);
+      assert.equal(cookieFrom(missing, 'matrimony-challenge'), '');
     },
   );
 

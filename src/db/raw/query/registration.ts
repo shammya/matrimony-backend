@@ -20,3 +20,18 @@ export const registrationQueries = {
  (agency_id, account_id, purpose, document_version, action)
  VALUES ($1, $2, $3, $4, 'accepted')`,
 };
+
+// Sign-in with an external provider. The account is found by the provider's stable subject.
+export const identityLinkQueries = {
+  // $1 agency, $2 provider, $3 subject. Any status, so a disabled account is told apart from none.
+  accountByIdentity: `SELECT a.id, a.agency_id, a.role, a.display_name, a.status
+ FROM matrimony.account_identities i
+ JOIN matrimony.accounts a ON a.agency_id = i.agency_id AND a.id = i.account_id
+ WHERE i.agency_id = $1 AND i.provider = $2 AND i.provider_subject = $3`,
+  // $1 agency, $2 account, $3 provider, $4 subject, $5 email. Nothing is added when the subject, or
+  // this provider for this account, is already linked.
+  insertIdentity: `INSERT INTO matrimony.account_identities
+ (agency_id, account_id, provider, provider_subject, email)
+ VALUES ($1, $2, $3, $4, $5)
+ ON CONFLICT DO NOTHING`,
+};

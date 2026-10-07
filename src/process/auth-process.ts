@@ -8,6 +8,7 @@ import type { IdentityService } from '../service/identity-service.js';
 import type { EventDbService } from '../db/service/event-db-service.js';
 import type { WorkflowEvent } from '../bo/event.js';
 import type { LoginInput } from '../bo/credentials.js';
+import type { Account } from '../bo/identity.js';
 import { AppError } from '../exception/app-error.js';
 
 /** Wrong passwords allowed for one email before sign-in pauses, and how long it pauses. */
@@ -54,21 +55,38 @@ export class AuthProcess {
    * has no account.
    */
   async login(agencyId: string, input: LoginInput, correlationId: string) {
-    const counter = `login:${agencyId}:${digest(input.email)}`;
+    const account = await this.checkPassword(agencyId, input.email, input.password);
+    return this.startSession(agencyId, account, correlationId);
+  }
+
+  /**
+   * The account when the email and password are right. Applies the pause after five wrong
+   * passwords. Everything that asks for a password goes through here (signing in, and approving
+   * the link of a Google identity), so none of them can be used to guess around the pause.
+   */
+  async checkPassword(agencyId: string, email: string, password: string): Promise<Account> {
+    const counter = `login:${agencyId}:${digest(email)}`;
     const attempts = await this.throttle.peek(counter);
     if (attempts.count >= MAX_FAILED_LOGINS)
       throw new AppError(429, 'TOO_MANY_ATTEMPTS', { retryAfter: attempts.retryAfter });
 
     let account;
     try {
-      account = await this.credentials.verify(agencyId, input.email, input.password);
+      account = await this.credentials.verify(agencyId, email, password);
     } catch (error) {
       if (error instanceof AppError && error.code === 'INVALID_CREDENTIALS')
         await this.throttle.hit(counter, LOCKOUT_SECONDS);
       throw error;
     }
     await this.throttle.clear(counter);
+    return account;
+  }
 
+  /**
+   * Starts a session for an account that has proved who it is, by whatever means (a password, or
+   * Google). The result is the same whichever way the person arrived.
+   */
+  async startSession(agencyId: string, account: Account, correlationId: string) {
     // A new id for every sign-in, so nothing a visitor held before signing in carries over.
     const id = secret();
     const key = digest(id);

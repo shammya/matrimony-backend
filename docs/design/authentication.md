@@ -2,7 +2,7 @@
 
 Decision record and design, 7 October 2026. It replaces the external OAuth/OIDC provider design in the [scaffold plan](backend-scaffold-plan.md#authentication).
 
-**Status:** email and password registration and sign-in, password reset, sessions and email delivery are implemented and tested. Google sign-in and phone codes are not built yet. Nothing here has been reviewed by an experienced backend or security reviewer, which [AGENTS.md](../../AGENTS.md) requires before a live release.
+**Status:** email and password registration and sign-in, password reset, sessions, email delivery and Google sign-in are implemented and tested. Phone codes and a mobile device-session mode are not built yet. Nothing here has been reviewed by an experienced backend or security reviewer, which [AGENTS.md](../../AGENTS.md) requires before a live release.
 
 ## Decision
 
@@ -36,6 +36,33 @@ every request ──► verify token signature ──► live session (Redis) �
 | Passwords in PostgreSQL (`account_credentials`, RLS) | `migrations/007_password_auth.sql` |
 | Email (console for development, SMTP) | `src/mail/` |
 
+## Sign-in with Google
+
+Added 8 October 2026, directly with Google (not through Firebase or another service: the backend stays the one place that knows who is signed in, there is no extra service or cost, and the same code can verify a Google ID token from the future React Native app).
+
+```text
+start (agreements checked) ──► Redis: sealed attempt (state, nonce, PKCE verifier) ──► Google
+callback ──► attempt used once ──► code exchange + ID token checks ──► one of:
+   identity already linked ......... session (like any login)
+   email has an account ............ password step: Google is linked only after that account's password
+   no account, intent = register ... member created (no password) + identity + consents + event, then session
+   no account, intent = login ...... nothing created: the person agrees to the terms on a page, then the same
+                                     as above (member created, no password, + identity + consents + event + session)
+```
+
+| Piece | Where |
+|---|---|
+| Talking to Google (discovery, PKCE, ID token and signature checks) | `src/security/google-provider.ts` |
+| What a Google sign-in means (the rules above) | `src/process/google-auth-process.ts` |
+| Inputs and the sealed records | `src/bo/google.ts` |
+| Creating and linking identities | `src/service/registration-service.ts`, `migrations/008_external_identities.sql` |
+
+- **Why a password step instead of linking by email.** Linking on matching emails lets whoever controls a look-alike Google account take over an existing account (and was the classic pre-hijacking route). Our own accounts only exist for emails proven by a link, so the risk is smaller than elsewhere, but proving ownership with the password is the safe default and costs one step, once. It reuses the sign-in pause, so it cannot be used to guess passwords around it.
+- **Found by Google's id, not the email**, so a changed Google email still signs in.
+- **The ID token's signature is checked by us** against Google's keys. The OIDC rules would let a token that came straight from the token endpoint over TLS skip that, and the library does skip it; a test of ours showed a forged token being accepted, so the check was added.
+- **Cookies.** The attempt cookie is Lax (Google sends the browser back from another site) and single use. The password-step cookie and the session cookie are Strict.
+- **New dependency:** `openid-client` (discovery, PKCE, state, nonce and the token exchange), which had been removed with Auth0 and is back.
+
 ## What it protects against
 
 | Threat | Control | Evidence |
@@ -51,6 +78,8 @@ every request ──► verify token signature ──► live session (Redis) �
 | A stolen or old session | Ends at its absolute expiry; sign-out, password reset and a disabled account end it at once; the oldest sessions of an account are signed out beyond 10 | `auth-flow.test.ts`, `auth-state.test.ts` |
 | Header injection and spoofed links | Email links are built only from the validated agency host; the sender address cannot hold a line break | `auth-http.test.ts`, `security.test.ts` |
 | Leaks in logs and events | Events hold ids only; failures log a code, never an address, link or password | `account-access.test.ts`, `auth-flow.test.ts` |
+| A look-alike or unconfirmed Google account | Only an email Google has confirmed counts; linking to an existing account needs its password; the link step shares the sign-in pause; the identity is Google's id | `google-auth.test.ts`, `google-provider.test.ts`, `integration/auth-flow.test.ts` |
+| A forged, replayed or foreign Google callback | State, nonce and PKCE; the attempt is single use and bound to the agency and callback address; the ID token's issuer, audience, expiry and signature are checked | `google-provider.test.ts`, `google-auth.test.ts` |
 | Tenant mix-ups | Row-level security on `account_credentials`; every query is by agency; the same email at two agencies is two accounts | `integration/registration.test.ts` |
 
 ## Defaults chosen without the product owner (please confirm)
@@ -67,7 +96,9 @@ These are my defaults, not requirements from the client.
 
 ## Not built yet
 
-- **Google sign-in** (next). It must never attach to an existing account by email alone, only create a session for an identity already linked, or link after the person proved the account with their password (see AGENTS.md). It needs the one-time challenge store (state, nonce, PKCE) that was removed with the provider.
+- **A mobile device-session mode** for the React Native app: tokens in the response body, a rotating refresh token stored hashed with reuse detection, no cookies, and an endpoint that accepts a Google ID token from the phone's own Google sign-in (our Android and iOS client ids as accepted audiences). The Google identity check and the account rules are already written apart from the web redirect, so this adds only a small endpoint. On the tracker as `b0-12`.
+- **Google, not yet checked against the real Google.** Everything of ours is tested, and the adapter against a local stand-in for Google, but a real sign-in with your Google Cloud client is the first live check. Moving the consent screen from Testing to production needs a published privacy policy.
+- **Unlinking Google**, and showing which sign-in methods an account has.
 - **Phone codes.** Needs an SMS gateway adapter (an interface like `Mailer`, with a development version that prints the code, so the tunnel used with Auth0 is no longer needed) and the same account linking rule. Phone-only members created before this change have no email or password and cannot sign in until one is set with `npm run auth:set-password`.
 - **Email delivery service.** The SMTP adapter works with any provider but has only been tested against a local SMTP server. Choose a provider, verify the sender domain (SPF, DKIM, DMARC) and send a real test.
 - Change password while signed in, a list of devices with remote sign-out, staff invitation by email, multi-factor authentication, a breached-password check, a different sender per agency.
@@ -78,4 +109,4 @@ These are my defaults, not requirements from the client.
 - Keep `AUTH_JWT_PRIVATE_KEY` and `SESSION_ENCRYPTION_KEY` in the secret manager, one pair per environment. Replacing the signing key signs people out of their current access tokens only; the next refresh signs a new one. Replacing the session key makes pending registrations unreadable (people register again).
 - Redis holds sessions, pending registrations and counters, so Redis being down means nobody can sign in (as before). Registration emails are not retried: a failed send is logged as `MAIL_SEND_FAILED` and the person asks again.
 - Watch for: `MAIL_SEND_FAILED`, many `TOO_MANY_ATTEMPTS` or `EMAIL_RATE_LIMITED` responses (guessing or email bombing), and sign-in failures after a deploy.
-- New dependencies: `nodemailer` (the standard Node SMTP client, for the SMTP adapter) and, for tests only, `smtp-server`. Password hashing uses Node's built-in Argon2 and needs no package.
+- New dependencies: `openid-client` (Google) and `nodemailer` (the standard Node SMTP client, for the SMTP adapter) and, for tests only, `smtp-server`. Password hashing uses Node's built-in Argon2 and needs no package.

@@ -455,6 +455,215 @@ await test('email and password accounts on real PostgreSQL', async (t) => {
     },
   );
 
+  const google = (name: string) => ({
+    provider: 'google' as const,
+    subject: `sub-${name}-${run}`,
+    email: email(name),
+  });
+
+  await t.test(
+    'registering with Google stores a member with no password, the identity, the consents and an event together',
+    async () => {
+      const identity = google('g1');
+      const result = await registrations.registerExternal(
+        agency,
+        { ...identity, displayName: 'Google Person' },
+        registration,
+        `req-g1-${run}`,
+      );
+      assert.ok(result.created);
+      const [row] = await accountRow(identity.email);
+      assert.equal(row.role, 'member');
+      assert.equal(row.status, 'active');
+      assert.equal(row.verified, true);
+      const counts = await admin.query(
+        `SELECT (SELECT count(*)::int FROM matrimony.account_credentials WHERE account_id=$1) AS passwords,
+              (SELECT count(*)::int FROM matrimony.account_identities WHERE account_id=$1) AS identities,
+              (SELECT count(*)::int FROM matrimony.consent_events WHERE account_id=$1) AS consents,
+              (SELECT count(*)::int FROM matrimony.event_outbox WHERE event->>'subjectId'=$1::text) AS events`,
+        [result.account.id],
+      );
+      assert.deepEqual(counts.rows[0], { passwords: 0, identities: 1, consents: 2, events: 1 });
+      const found = await registrations.findByIdentity(agency, 'google', identity.subject);
+      assert.equal(found?.account.id, result.account.id);
+      assert.equal(found?.status, 'active');
+    },
+  );
+
+  await t.test("the identity is found by Google's id only inside its own agency", async () => {
+    const identity = google('g2');
+    const result = await registrations.registerExternal(
+      agency,
+      { ...identity, displayName: 'G' },
+      registration,
+      'r',
+    );
+    assert.ok(result.created);
+    assert.equal(await registrations.findByIdentity(otherAgency, 'google', identity.subject), null);
+    // The same Google person can have a separate account at another agency.
+    const other = await registrations.registerExternal(
+      otherAgency,
+      { ...identity, displayName: 'G' },
+      registration,
+      'r',
+    );
+    assert.ok(other.created);
+    assert.notEqual(other.account.id, result.account.id);
+    assert.equal(
+      (await registrations.findByIdentity(otherAgency, 'google', identity.subject))?.account.id,
+      other.account.id,
+    );
+  });
+
+  await t.test(
+    'Google never takes over an email that already has an account, and creates nothing',
+    async () => {
+      const existing = await registrations.createVerified(agency, await verified('g3'), 'r');
+      assert.ok(existing.created);
+      const identity = google('g3');
+      assert.deepEqual(
+        await registrations.registerExternal(
+          agency,
+          { ...identity, displayName: 'Takeover' },
+          registration,
+          'r',
+        ),
+        { created: false },
+      );
+      assert.equal((await accountRow(identity.email)).length, 1);
+      assert.equal(await registrations.findByIdentity(agency, 'google', identity.subject), null);
+      // The account is still reachable with its own password only.
+      assert.equal(
+        (await credentials.verify(agency, identity.email, 'the right password')).id,
+        existing.account.id,
+      );
+    },
+  );
+
+  await t.test(
+    'a Google identity can belong to one account, and an account can have one Google identity',
+    async () => {
+      const first = await registrations.createVerified(agency, await verified('g4a'), 'r');
+      const second = await registrations.createVerified(agency, await verified('g4b'), 'r');
+      assert.ok(first.created && second.created);
+      const identity = google('g4');
+      assert.equal(
+        await registrations.linkIdentity(agency, first.account.id, identity, `req-l-${run}`),
+        true,
+      );
+      // The same Google person cannot also be linked to a second account.
+      assert.equal(
+        await registrations.linkIdentity(agency, second.account.id, identity, 'r'),
+        false,
+      );
+      // And the first account cannot get another Google identity.
+      assert.equal(
+        await registrations.linkIdentity(
+          agency,
+          first.account.id,
+          { ...identity, subject: `other-${run}` },
+          'r',
+        ),
+        false,
+      );
+      const events = await admin.query(
+        `SELECT event FROM matrimony.event_outbox WHERE event->>'correlationId'=$1`,
+        [`req-l-${run}`],
+      );
+      assert.equal(events.rows.length, 1);
+      assert.equal(events.rows[0].event.type, 'auth.identity_linked');
+      // The first account still signs in with its password as well.
+      assert.equal(
+        (await credentials.verify(agency, email('g4a'), 'the right password')).id,
+        first.account.id,
+      );
+    },
+  );
+
+  await t.test(
+    'two requests registering the same Google person at once create exactly one account',
+    async () => {
+      const identity = google('g5');
+      const results = await Promise.allSettled(
+        Array.from({ length: 4 }, () =>
+          registrations.registerExternal(
+            agency,
+            { ...identity, displayName: 'Race' },
+            registration,
+            'r',
+          ),
+        ),
+      );
+      const created = results.filter((r) => r.status === 'fulfilled' && r.value.created).length;
+      assert.equal(created, 1);
+      assert.equal((await accountRow(identity.email)).length, 1);
+      const rows = await admin.query(
+        `SELECT count(*)::int AS n FROM matrimony.account_identities WHERE provider_subject=$1`,
+        [identity.subject],
+      );
+      assert.equal(rows.rows[0].n, 1);
+    },
+  );
+
+  await t.test(
+    'the runtime role cannot change or delete an identity, and another agency cannot see it',
+    async () => {
+      const identity = google('g6');
+      const result = await registrations.registerExternal(
+        agency,
+        { ...identity, displayName: 'G' },
+        registration,
+        'r',
+      );
+      assert.ok(result.created);
+      const run1 = (sql: string, params: unknown[]) =>
+        db.transaction(agency, (tx) => tx.query(sql, params));
+      await assert.rejects(
+        () =>
+          run1('DELETE FROM matrimony.account_identities WHERE account_id=$1', [result.account.id]),
+        /permission denied/,
+      );
+      await assert.rejects(
+        () =>
+          run1("UPDATE matrimony.account_identities SET provider_subject='x' WHERE account_id=$1", [
+            result.account.id,
+          ]),
+        /permission denied/,
+      );
+      const elsewhere = await db.transaction(otherAgency, (tx) =>
+        tx.query(
+          'SELECT count(*)::int AS n FROM matrimony.account_identities WHERE account_id=$1',
+          [result.account.id],
+        ),
+      );
+      assert.equal(elsewhere.rows[0].n, 0);
+      await assert.rejects(() =>
+        db.transaction(otherAgency, (tx) =>
+          tx.query(
+            "INSERT INTO matrimony.account_identities(agency_id, account_id, provider, provider_subject, email) VALUES ($1,$2,'google','x','x@y.com')",
+            [agency, result.account.id],
+          ),
+        ),
+      );
+    },
+  );
+
+  await t.test(
+    'the database refuses an unknown provider, an empty subject and an email that is not lower case',
+    async () => {
+      const created = await registrations.createVerified(agency, await verified('g7'), 'r');
+      assert.ok(created.created);
+      const insert = (provider: string, subject: string, addr: string) =>
+        admin.query(
+          'INSERT INTO matrimony.account_identities(agency_id, account_id, provider, provider_subject, email) VALUES ($1,$2,$3,$4,$5)',
+          [agency, created.account.id, provider, subject, addr],
+        );
+      await assert.rejects(() => insert('facebook', 's', 'a@b.com'), /check constraint/);
+      await assert.rejects(() => insert('google', '', 'a@b.com'), /check constraint/);
+      await assert.rejects(() => insert('google', 's', 'A@B.com'), /check constraint/);
+    },
+  );
+
   await t.test(
     'the database itself refuses a plain-text password and an unverified email without an address',
     async () => {

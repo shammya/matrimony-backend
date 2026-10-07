@@ -1,10 +1,21 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AuthProcess } from '../process/auth-process.js';
 import type { AccountAccessProcess } from '../process/account-access-process.js';
+import { GoogleSignInError, type GoogleAuthProcess } from '../process/google-auth-process.js';
+import { ZodError } from 'zod';
+import {
+  googleLinkInputSchema,
+  googleSignupInputSchema,
+  googleStartInputSchema,
+} from '../bo/google.js';
 import type { AppConfig } from '../config/env.js';
 import { AppError } from '../exception/app-error.js';
 import {
+  authorizationResponseSchema,
   browserSecretSchema,
+  methodsResponseSchema,
+  pendingLinkResponseSchema,
+  pendingSignupResponseSchema,
   statusResponseSchema,
   tokensResponseSchema,
 } from '../io/http/contracts.js';
@@ -19,6 +30,13 @@ import './context.js';
 export function registerAuthController(
   app: FastifyInstance,
   auth: Pick<AuthProcess, 'login' | 'bootstrap' | 'refresh' | 'logout'>,
+  /** Undefined when Google sign-in is not configured. */
+  google:
+    | Pick<
+        GoogleAuthProcess,
+        'start' | 'complete' | 'pending' | 'link' | 'pendingSignup' | 'signup'
+      >
+    | undefined,
   access: Pick<
     AccountAccessProcess,
     'startRegistration' | 'verifyEmail' | 'requestPasswordReset' | 'resetPassword'
@@ -35,6 +53,25 @@ export function registerAuthController(
     // site, so the cookie is never sent on a cross-site request at all.
     sameSite: 'strict' as const,
   };
+  // Coming back from Google is a cross-site navigation, so the cookie that carries the attempt
+  // must be Lax to be sent. It is single use, lasts 5 minutes and is cleared when it is read.
+  const challengeCookie = `${prefix}matrimony-challenge`;
+  const challengeOptions = { ...cookieOptions, sameSite: 'lax' as const };
+  // Holds the id of a Google link waiting for the account's password. Only this site's own pages
+  // use it, so it is strict. It lasts 10 minutes.
+  const linkCookie = `${prefix}matrimony-link`;
+  // The same, for a person who has no account yet and is about to agree to the terms.
+  const signupCookie = `${prefix}matrimony-signup`;
+  const googleOrFail = () => {
+    if (!google) throw new AppError(404, 'GOOGLE_NOT_CONFIGURED');
+    return google;
+  };
+  // The frontend page the browser is sent to, in the language the person was reading (or the
+  // agency's when that is not known).
+  function frontendPath(req: FastifyRequest, page: string, locale?: string) {
+    const language = (locale ?? req.tenant?.locale) === 'en' ? 'en' : 'bn';
+    return `/${language}/${page}`;
+  }
   function requireSameOrigin(req: FastifyRequest) {
     if (req.headers.origin !== req.canonicalOrigin) throw new AppError(403, 'ORIGIN_INVALID');
   }
@@ -126,6 +163,150 @@ export function registerAuthController(
       const { token, password } = resetPasswordInputSchema.parse(req.body);
       await access.resetPassword(accessContext(req), token, password, req.id);
       return { status: 'password_reset' };
+    },
+  );
+  // Which ways of signing in are on, so the pages only show buttons that work.
+  app.get(
+    '/api/v1/auth/methods',
+    { config: { public: true }, schema: { response: { 200: methodsResponseSchema } } },
+    async () => ({ password: true, google: google !== undefined }),
+  );
+  // Starts a Google sign-in or registration. Registering needs the same agreements as an email
+  // registration, checked here before the person leaves. Nothing is created yet.
+  app.post(
+    '/api/v1/auth/google/start',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: authorizationResponseSchema } },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const process = googleOrFail();
+      const input = googleStartInputSchema.parse(req.body);
+      const started = await process.start(req.tenant!.id, req.canonicalOrigin, input);
+      reply.setCookie(challengeCookie, started.challengeId, { ...challengeOptions, maxAge: 300 });
+      return { authorizationUrl: started.authorizationUrl };
+    },
+  );
+  // Where Google sends the browser back. It never returns tokens: it sets the session cookie and
+  // redirects to a frontend page, which fetches its tokens like after a reload. A failure goes back
+  // to the login page with a stable code.
+  app.get(
+    '/api/v1/auth/google/callback',
+    { config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } } },
+    async (req, reply) => {
+      try {
+        const process = googleOrFail();
+        const id = browserSecretSchema.parse(req.cookies[challengeCookie]);
+        reply.clearCookie(challengeCookie, challengeOptions);
+        const outcome = await process.complete(
+          req.tenant!.id,
+          id,
+          new URL(req.url, req.canonicalOrigin),
+          req.id,
+        );
+        if (outcome.kind === 'session') {
+          reply.setCookie(sessionCookie, outcome.sessionId, {
+            ...cookieOptions,
+            maxAge: config.SESSION_TTL_SECONDS,
+          });
+          return reply.redirect(frontendPath(req, 'dashboard', outcome.locale));
+        }
+        if (outcome.kind === 'signup') {
+          reply.setCookie(signupCookie, outcome.pendingId, { ...cookieOptions, maxAge: 600 });
+          return reply.redirect(frontendPath(req, 'signup-google', outcome.locale));
+        }
+        reply.setCookie(linkCookie, outcome.pendingId, { ...cookieOptions, maxAge: 600 });
+        return reply.redirect(frontendPath(req, 'link-google', outcome.locale));
+      } catch (error) {
+        const code =
+          error instanceof AppError
+            ? error.code
+            : error instanceof ZodError
+              ? 'INVALID_REQUEST'
+              : null;
+        if (!code) throw error;
+        reply.clearCookie(challengeCookie, challengeOptions);
+        const locale = error instanceof GoogleSignInError ? error.locale : undefined;
+        return reply.redirect(`${frontendPath(req, 'login', locale)}?error=${code}`);
+      }
+    },
+  );
+  // Whose account is waiting for its password before Google is linked to it.
+  app.get(
+    '/api/v1/auth/google/pending',
+    {
+      config: { public: true, rateLimit: { max: 20, timeWindow: 60000 } },
+      schema: { response: { 200: pendingLinkResponseSchema } },
+    },
+    async (req) => {
+      const process = googleOrFail();
+      return process.pending(req.tenant!.id, browserSecretSchema.parse(req.cookies[linkCookie]));
+    },
+  );
+  // For a person Google found no account for: who they are, and then, once they agree to the terms,
+  // the account is created and they are signed in like after a login.
+  app.get(
+    '/api/v1/auth/google/signup',
+    {
+      config: { public: true, rateLimit: { max: 20, timeWindow: 60000 } },
+      schema: { response: { 200: pendingSignupResponseSchema } },
+    },
+    async (req) => {
+      const process = googleOrFail();
+      return process.pendingSignup(
+        req.tenant!.id,
+        browserSecretSchema.parse(req.cookies[signupCookie]),
+      );
+    },
+  );
+  app.post(
+    '/api/v1/auth/google/signup',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: tokensResponseSchema } },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const process = googleOrFail();
+      const input = googleSignupInputSchema.parse(req.body);
+      const pendingId = browserSecretSchema.parse(req.cookies[signupCookie]);
+      const result = await process.signup(req.tenant!.id, pendingId, input, req.id);
+      reply.clearCookie(signupCookie, cookieOptions);
+      reply.setCookie(sessionCookie, result.sessionId, {
+        ...cookieOptions,
+        maxAge: config.SESSION_TTL_SECONDS,
+      });
+      return {
+        accessToken: result.accessToken,
+        csrfToken: result.csrfToken,
+        expiresIn: result.expiresIn,
+      };
+    },
+  );
+  // Approves the link with the account's password and signs the person in, like a login.
+  app.post(
+    '/api/v1/auth/google/link',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: tokensResponseSchema } },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const process = googleOrFail();
+      const { password } = googleLinkInputSchema.parse(req.body);
+      const pendingId = browserSecretSchema.parse(req.cookies[linkCookie]);
+      const result = await process.link(req.tenant!.id, pendingId, password, req.id);
+      reply.clearCookie(linkCookie, cookieOptions);
+      reply.setCookie(sessionCookie, result.sessionId, {
+        ...cookieOptions,
+        maxAge: config.SESSION_TTL_SECONDS,
+      });
+      return {
+        accessToken: result.accessToken,
+        csrfToken: result.csrfToken,
+        expiresIn: result.expiresIn,
+      };
     },
   );
   // Restores the browser session after a reload or in a new tab. It needs only the session cookie
