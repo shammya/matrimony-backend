@@ -36,7 +36,8 @@ const verified: VerifiedRegistration = {
 interface Row {
   agencyId: string;
   account: Account;
-  email: string;
+  email: string | null;
+  phone?: string;
   locale: string;
   status: FoundAccount['status'];
   passwordHash?: string;
@@ -63,6 +64,8 @@ class FakeStore {
     findByEmail: async (agencyId: string, email: string) => this.byEmail(agencyId, email),
     findByIdentity: async (agencyId: string, provider: string, subject: string) =>
       this.byIdentity(agencyId, provider, subject),
+    findByPhone: async (agencyId: string, phone: string) => this.byPhone(agencyId, phone),
+    signInMethods: async () => null,
     inTransaction: async <T>(_agencyId: string, work: (unit: RegistrationUnit) => Promise<T>) => {
       this.transactions += 1;
       // All or nothing, like a database transaction.
@@ -88,6 +91,16 @@ class FakeStore {
     const row = link && this.rows.find((r) => r.account.id === link.accountId);
     return row ? { account: row.account, status: row.status } : null;
   }
+
+  private byPhone(agencyId: string, phone: string): FoundAccount | null {
+    const row = this.rows.find((r) => r.agencyId === agencyId && r.phone === phone);
+    return row ? { account: row.account, status: row.status } : null;
+  }
+
+  /** Make the next phone insert lose a race with another request for the same number. */
+  racePhoneOnInsert = false;
+  /** Make the next number change fail the way the unique constraint does. */
+  uniqueViolationOnSetPhone = false;
 
   private byEmail(agencyId: string, email: string): FoundAccount | null {
     const row = this.rows.find((r) => r.agencyId === agencyId && r.email === email);
@@ -139,6 +152,40 @@ class FakeStore {
         );
         if (taken) return false;
         this.identities.push({ agencyId, accountId, ...identity });
+        return true;
+      },
+      findByPhone: async (agencyId, phone) => this.byPhone(agencyId, phone),
+      createPhoneMember: async (agencyId, member) => {
+        if (this.racePhoneOnInsert) {
+          this.racePhoneOnInsert = false;
+          return null;
+        }
+        const account: Account = {
+          id: member.id,
+          agencyId,
+          role: 'member',
+          displayName: member.displayName,
+        };
+        this.rows.push({
+          agencyId,
+          account,
+          email: null,
+          phone: member.phone,
+          locale: member.locale,
+          status: 'active',
+        });
+        return account;
+      },
+      phoneTakenByOther: async (agencyId, phone, accountId) =>
+        this.rows.some(
+          (r) => r.agencyId === agencyId && r.phone === phone && r.account.id !== accountId,
+        ),
+      setPhone: async (_agencyId, accountId, phone) => {
+        if (this.uniqueViolationOnSetPhone)
+          throw Object.assign(new Error('dup'), { code: '23505' });
+        const row = this.rows.find((r) => r.account.id === accountId && r.status === 'active');
+        if (!row) return false;
+        row.phone = phone;
         return true;
       },
       createCredential: async (_agencyId, accountId, hash) => {
@@ -400,4 +447,126 @@ await test('linking Google to an existing account records an event; a second lin
   );
   assert.equal(store.identities.length, 1);
   assert.equal(store.events.length, 1);
+});
+
+await test('registering with a phone creates one member with no email and no password, and records the agreements', async () => {
+  const { store, service } = setup();
+  const result = await service.registerPhone(
+    agency,
+    { phone: '+8801712345678', displayName: 'Nina' },
+    registration,
+    'req-p1',
+  );
+  assert.ok(result.created);
+  assert.equal(result.account.role, 'member');
+  assert.equal(result.account.displayName, 'Nina');
+  assert.equal(store.rows[0]!.phone, '+8801712345678');
+  assert.equal(store.rows[0]!.email, null);
+  assert.equal(store.rows[0]!.passwordHash, undefined);
+  assert.deepEqual(
+    store.consents.map((c) => c.consent.purpose),
+    ['terms', 'privacy'],
+  );
+  assert.deepEqual(
+    store.events.map((e) => [e.type, e.subjectId, e.correlationId]),
+    [['account.registered', result.account.id, 'req-p1']],
+  );
+});
+
+await test('a number that already has an account is never given a second one', async () => {
+  const { store, service } = setup();
+  const first = await service.registerPhone(
+    agency,
+    { phone: '+8801712345678', displayName: 'A' },
+    registration,
+    'r',
+  );
+  assert.ok(first.created);
+  const again = await service.registerPhone(
+    agency,
+    { phone: '+8801712345678', displayName: 'B' },
+    registration,
+    'r',
+  );
+  assert.deepEqual(again, { created: false });
+  assert.equal(store.rows.length, 1);
+});
+
+await test('losing the race for a number creates nothing and records nothing', async () => {
+  const { store, service } = setup();
+  store.racePhoneOnInsert = true;
+  const result = await service.registerPhone(
+    agency,
+    { phone: '+8801712345678', displayName: 'A' },
+    registration,
+    'r',
+  );
+  assert.deepEqual(result, { created: false });
+  assert.equal(store.consents.length, 0);
+  assert.equal(store.events.length, 0);
+});
+
+await test('the same number can belong to accounts of different agencies', async () => {
+  const { store, service } = setup();
+  assert.ok(
+    (
+      await service.registerPhone(
+        agency,
+        { phone: '+8801712345678', displayName: 'A' },
+        registration,
+        'r',
+      )
+    ).created,
+  );
+  assert.ok(
+    (
+      await service.registerPhone(
+        otherAgency,
+        { phone: '+8801712345678', displayName: 'B' },
+        registration,
+        'r',
+      )
+    ).created,
+  );
+  assert.equal(store.rows.length, 2);
+});
+
+await test('adding a number to an account records an event, and the number is then findable', async () => {
+  const { store, service } = setup();
+  const row = store.add(agency, 'rahim@example.com');
+  const result = await service.attachPhone(agency, row.account.id, '+8801712345678', 'req-a');
+  assert.equal(result, 'attached');
+  assert.equal(row.phone, '+8801712345678');
+  assert.deepEqual(
+    store.events.map((e) => [e.type, e.subjectId]),
+    [['auth.phone_added', row.account.id]],
+  );
+  assert.equal((await service.findByPhone(agency, '+8801712345678'))?.account.id, row.account.id);
+});
+
+await test('a number that another account already uses cannot be added, and nothing changes', async () => {
+  const { store, service } = setup();
+  const owner = store.add(agency, 'owner@example.com');
+  owner.phone = '+8801712345678';
+  const other = store.add(agency, 'other@example.com');
+  assert.equal(await service.attachPhone(agency, other.account.id, '+8801712345678', 'r'), 'taken');
+  assert.equal(other.phone, undefined);
+  assert.equal(store.events.length, 0);
+});
+
+await test('two accounts proving one number at the same moment: the database lets one keep it', async () => {
+  const { store, service } = setup();
+  const row = store.add(agency, 'rahim@example.com');
+  store.uniqueViolationOnSetPhone = true;
+  assert.equal(await service.attachPhone(agency, row.account.id, '+8801712345678', 'r'), 'taken');
+});
+
+await test('a disabled account cannot get a number added', async () => {
+  const { store, service } = setup();
+  const row = store.add(agency, 'rahim@example.com', 'disabled');
+  assert.equal(
+    await service.attachPhone(agency, row.account.id, '+8801712345678', 'r'),
+    'inactive',
+  );
+  assert.equal(store.events.length, 0);
 });

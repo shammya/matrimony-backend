@@ -2,7 +2,7 @@
 
 Decision record and design, 7 October 2026. It replaces the external OAuth/OIDC provider design in the [scaffold plan](backend-scaffold-plan.md#authentication).
 
-**Status:** email and password registration and sign-in, password reset, sessions, email delivery and Google sign-in are implemented and tested. Phone codes and a mobile device-session mode are not built yet. Nothing here has been reviewed by an experienced backend or security reviewer, which [AGENTS.md](../../AGENTS.md) requires before a live release.
+**Status:** email and password registration and sign-in, password reset, sessions, email delivery, Google sign-in and phone codes are implemented and tested. A real SMS gateway and a mobile device-session mode are not built yet. Nothing here has been reviewed by an experienced backend or security reviewer, which [AGENTS.md](../../AGENTS.md) requires before a live release.
 
 ## Decision
 
@@ -63,6 +63,33 @@ callback ──► attempt used once ──► code exchange + ID token checks �
 - **Cookies.** The attempt cookie is Lax (Google sends the browser back from another site) and single use. The password-step cookie and the session cookie are Strict.
 - **New dependency:** `openid-client` (discovery, PKCE, state, nonce and the token exchange), which had been removed with Auth0 and is back.
 
+## Sign-in with a phone number and a code
+
+Added 8 October 2026. The same three outcomes as Google, and the same session afterwards.
+
+```text
+ask for a code ──► SMS: six digits, 5 minutes, one use ──► check the code ──► one of:
+   the number has an account ........ session (like any login)
+   no account ....................... nothing created: name + terms on a page, then the member is
+                                      created (no email, no password) + consents + event, then session
+```
+
+| Piece | Where |
+|---|---|
+| Number rules (E.164, Bangladeshi forms, Bengali digits) and the inputs | `src/bo/phone.ts` |
+| What a phone sign-in means (limits, codes, outcomes) | `src/process/phone-auth-process.ts` |
+| Codes in Redis (atomic check, wrong-guess count) | `src/cache/repository/phone-code-repository.ts` |
+| Sending (interface, development console sender, the text) | `src/sms/sender.ts`, `src/sms/messages.ts` |
+| Accounts by number, creating one, adding a number | `src/service/registration-service.ts`, `migrations/009_phone_sign_in.sql` |
+
+- **Same answer for every number.** Asking for a code sends one and answers 202 whether or not the number has an account, because "this person is a member" is private on a matrimony site. Only after a right code do the paths differ, and then the person has proved they hold the number.
+- **The code.** Six digits from a cryptographic generator, stored only as an HMAC keyed by the session encryption key (a plain hash of six digits could be reversed in a moment if Redis leaked). It works once, for 5 minutes, survives 4 wrong guesses (the 5th cancels it), and asking again replaces it. The check is one atomic Redis script, so many guesses at once cannot get more tries.
+- **Cost and abuse limits.** One code a minute and 5 an hour per number, 2000 a day per agency, and 10 requests per 10 minutes per address. Every text costs money, and an open "send" button is how people get flooded with texts.
+- **Never attached by number alone.** An existing account gets a number only from its signed-in owner, who proves it with a code (`/me/phone/start` and `/me/phone/verify`). Codes are scoped to the account that asked, so a code meant for adding cannot sign anyone in, and one sent for one account cannot add the number to another. A number already used by another account is refused after the proof (409 `PHONE_IN_USE`).
+- **Phone-only members** have no email and no password. They cannot use "forgot password". They can add an email later only once there is a flow for it (not built).
+- **Recycled numbers.** A phone company can give a number to someone new. A phone-only account has no second factor against that; an account with an email and password is only reachable by the number once its owner added it. Worth the reviewer's attention.
+- **Sender.** `SMS_DRIVER=console` prints the text, with its code, in the backend terminal for development, and the configuration refuses it in production. With no driver set, phone sign-in is not offered. A real gateway is another `SmsSender` implementation. Nothing about a gateway's API is assumed here: it must time out and throw when the message is not accepted.
+
 ## What it protects against
 
 | Threat | Control | Evidence |
@@ -99,7 +126,8 @@ These are my defaults, not requirements from the client.
 - **A mobile device-session mode** for the React Native app: tokens in the response body, a rotating refresh token stored hashed with reuse detection, no cookies, and an endpoint that accepts a Google ID token from the phone's own Google sign-in (our Android and iOS client ids as accepted audiences). The Google identity check and the account rules are already written apart from the web redirect, so this adds only a small endpoint. On the tracker as `b0-12`.
 - **Google, not yet checked against the real Google.** Everything of ours is tested, and the adapter against a local stand-in for Google, but a real sign-in with your Google Cloud client is the first live check. Moving the consent screen from Testing to production needs a published privacy policy.
 - **Unlinking Google**, and showing which sign-in methods an account has.
-- **Phone codes.** Needs an SMS gateway adapter (an interface like `Mailer`, with a development version that prints the code, so the tunnel used with Auth0 is no longer needed) and the same account linking rule. Phone-only members created before this change have no email or password and cannot sign in until one is set with `npm run auth:set-password`.
+- **A real SMS gateway.** Phone codes work with the development console sender. A gateway that reaches Bangladeshi numbers reliably, with its price and sender-name rules checked, plugs into `SmsSender`; the first real send is the live check. Phone-only members created before phone sign-in (by the old Auth0 flow) have no verified number, so they cannot sign in by phone until they add it, and have no email or password until one is set with `npm run auth:set-password`.
+- **Adding an email or a password to a phone-only account**, and changing a number with a stronger check than the signed-in session plus a code on the new number (for example asking the password first).
 - **Email delivery service.** The SMTP adapter works with any provider but has only been tested against a local SMTP server. Choose a provider, verify the sender domain (SPF, DKIM, DMARC) and send a real test.
 - Change password while signed in, a list of devices with remote sign-out, staff invitation by email, multi-factor authentication, a breached-password check, a different sender per agency.
 - `test/integration/resources.test.ts` (MongoDB) was not run during this change.

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Account } from '../bo/identity.js';
 import { consentsFor, type Registration } from '../bo/registration.js';
 import { AppError } from '../exception/app-error.js';
-import type { FoundAccount } from '../db/raw/repository/registration-repository.js';
+import type { FoundAccount, SignInMethods } from '../db/raw/repository/registration-repository.js';
 import type { RegistrationDbService } from '../db/service/registration-db-service.js';
 
 /** What was typed at registration and has since been proven by opening the emailed link. */
@@ -36,13 +36,73 @@ export class RegistrationService {
   constructor(
     private readonly db: Pick<
       RegistrationDbService,
-      'findByEmail' | 'findByIdentity' | 'inTransaction'
+      'findByEmail' | 'findByIdentity' | 'findByPhone' | 'signInMethods' | 'inTransaction'
     >,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
   async emailRegistered(agencyId: string, email: string): Promise<boolean> {
     return (await this.db.findByEmail(agencyId, email)) !== null;
+  }
+
+  /** The account whose proven phone number this is, whatever its status. Null when none is. */
+  findByPhone(agencyId: string, phone: string): Promise<FoundAccount | null> {
+    return this.db.findByPhone(agencyId, phone);
+  }
+
+  /** What an account can sign in with, for its settings. */
+  signInMethods(agencyId: string, accountId: string): Promise<SignInMethods | null> {
+    return this.db.signInMethods(agencyId, accountId);
+  }
+
+  /**
+   * Creates a member from a phone number a code has just proven. There is no email and no
+   * password. The account, the consents and an event are written in one transaction. Never used
+   * when the number already has an account: that signs in.
+   */
+  async registerPhone(
+    agencyId: string,
+    member: { phone: string; displayName: string },
+    registration: Registration,
+    correlationId: string,
+  ): Promise<CreateResult> {
+    return this.db.inTransaction(agencyId, async (unit): Promise<CreateResult> => {
+      if (await unit.findByPhone(agencyId, member.phone)) return { created: false };
+      const account = await unit.createPhoneMember(agencyId, {
+        id: randomUUID(),
+        displayName: member.displayName,
+        phone: member.phone,
+        locale: registration.locale,
+      });
+      if (!account) return { created: false };
+      await unit.recordConsents(agencyId, account.id, consentsFor(registration));
+      await unit.appendEvent(this.event('account.registered', agencyId, account.id, correlationId));
+      return { created: true, account };
+    });
+  }
+
+  /**
+   * Adds or changes the number of an account. The caller must already have proved the number with
+   * a code and the person with their session. 'taken' when another account uses the number.
+   */
+  async attachPhone(
+    agencyId: string,
+    accountId: string,
+    phone: string,
+    correlationId: string,
+  ): Promise<'attached' | 'taken' | 'inactive'> {
+    try {
+      return await this.db.inTransaction(agencyId, async (unit) => {
+        if (await unit.phoneTakenByOther(agencyId, phone, accountId)) return 'taken' as const;
+        if (!(await unit.setPhone(agencyId, accountId, phone))) return 'inactive' as const;
+        await unit.appendEvent(this.event('auth.phone_added', agencyId, accountId, correlationId));
+        return 'attached' as const;
+      });
+    } catch (error) {
+      // Two accounts proved the same number at the same moment: the database let only one keep it.
+      if ((error as { code?: string }).code === '23505') return 'taken';
+      throw error;
+    }
   }
 
   /** The account linked to this provider identity, whatever its status. Null when none is. */
@@ -111,7 +171,7 @@ export class RegistrationService {
   }
 
   private event(
-    type: 'account.registered' | 'auth.identity_linked',
+    type: 'account.registered' | 'auth.identity_linked' | 'auth.phone_added',
     agencyId: string,
     accountId: string,
     correlationId: string,

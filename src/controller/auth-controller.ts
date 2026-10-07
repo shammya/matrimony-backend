@@ -2,6 +2,16 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AuthProcess } from '../process/auth-process.js';
 import type { AccountAccessProcess } from '../process/account-access-process.js';
 import { GoogleSignInError, type GoogleAuthProcess } from '../process/google-auth-process.js';
+import type { PhoneAuthProcess } from '../process/phone-auth-process.js';
+import type { RegistrationService } from '../service/registration-service.js';
+import {
+  maskPhone,
+  phoneAttachConfirmInputSchema,
+  phoneAttachStartInputSchema,
+  phoneSignupInputSchema,
+  phoneStartInputSchema,
+  phoneVerifyInputSchema,
+} from '../bo/phone.js';
 import { ZodError } from 'zod';
 import {
   googleLinkInputSchema,
@@ -14,8 +24,11 @@ import {
   authorizationResponseSchema,
   browserSecretSchema,
   methodsResponseSchema,
+  codeSentResponseSchema,
   pendingLinkResponseSchema,
+  pendingPhoneSignupResponseSchema,
   pendingSignupResponseSchema,
+  signInMethodsResponseSchema,
   statusResponseSchema,
   tokensResponseSchema,
 } from '../io/http/contracts.js';
@@ -37,6 +50,14 @@ export function registerAuthController(
         'start' | 'complete' | 'pending' | 'link' | 'pendingSignup' | 'signup'
       >
     | undefined,
+  /** Undefined when no SMS sender is configured. */
+  phone:
+    | Pick<
+        PhoneAuthProcess,
+        'sendCode' | 'verifyCode' | 'pendingSignup' | 'signup' | 'sendAttachCode' | 'confirmAttach'
+      >
+    | undefined,
+  registrations: Pick<RegistrationService, 'signInMethods'>,
   access: Pick<
     AccountAccessProcess,
     'startRegistration' | 'verifyEmail' | 'requestPasswordReset' | 'resetPassword'
@@ -62,6 +83,10 @@ export function registerAuthController(
   const linkCookie = `${prefix}matrimony-link`;
   // The same, for a person who has no account yet and is about to agree to the terms.
   const signupCookie = `${prefix}matrimony-signup`;
+  const phoneOrFail = () => {
+    if (!phone) throw new AppError(404, 'PHONE_NOT_CONFIGURED');
+    return phone;
+  };
   const googleOrFail = () => {
     if (!google) throw new AppError(404, 'GOOGLE_NOT_CONFIGURED');
     return google;
@@ -177,7 +202,7 @@ export function registerAuthController(
   app.get(
     '/api/v1/auth/methods',
     { config: { public: true }, schema: { response: { 200: methodsResponseSchema } } },
-    async () => ({ password: true, google: google !== undefined }),
+    async () => ({ password: true, google: google !== undefined, phone: phone !== undefined }),
   );
   // Starts a Google sign-in or registration. Registering needs the same agreements as an email
   // registration, checked here before the person leaves. Nothing is created yet.
@@ -315,6 +340,149 @@ export function registerAuthController(
         csrfToken: result.csrfToken,
         expiresIn: result.expiresIn,
       };
+    },
+  );
+  // ---- Sign in and register with a phone number and a code ----
+  // Sends a code. The same answer and the same text whether or not the number has an account.
+  // A tight limit by address, on top of the limits by number and by agency inside the process.
+  app.post(
+    '/api/v1/auth/phone/start',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 600000 } },
+      schema: { response: { 202: codeSentResponseSchema } },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const process = phoneOrFail();
+      const input = phoneStartInputSchema.parse(req.body);
+      const sent = await process.sendCode(
+        { agencyId: req.tenant!.id, agencyName: req.tenant!.name },
+        input.phone,
+        input.locale,
+      );
+      return reply.code(202).send({ status: 'code_sent', ...sent });
+    },
+  );
+  // Checks the code. Signs in when the number has an account (200, like a login). Otherwise 202
+  // and the pending-signup cookie: the person finishes on the page that asks for the terms.
+  app.post(
+    '/api/v1/auth/phone/verify',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: tokensResponseSchema, 202: statusResponseSchema } },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const process = phoneOrFail();
+      const input = phoneVerifyInputSchema.parse(req.body);
+      const outcome = await process.verifyCode(
+        req.tenant!.id,
+        input.phone,
+        input.code,
+        input.locale,
+        req.id,
+      );
+      if (outcome.kind === 'signup') {
+        reply.setCookie(signupCookie, outcome.pendingId, { ...cookieOptions, maxAge: 600 });
+        return reply.code(202).send({ status: 'signup_required' });
+      }
+      reply.setCookie(sessionCookie, outcome.sessionId, {
+        ...cookieOptions,
+        maxAge: config.SESSION_TTL_SECONDS,
+      });
+      return {
+        accessToken: outcome.accessToken,
+        csrfToken: outcome.csrfToken,
+        expiresIn: outcome.expiresIn,
+      };
+    },
+  );
+  // The proven number that has no account yet, for the page that asks for the name and the terms.
+  app.get(
+    '/api/v1/auth/phone/signup',
+    {
+      config: { public: true, rateLimit: { max: 20, timeWindow: 60000 } },
+      schema: { response: { 200: pendingPhoneSignupResponseSchema } },
+    },
+    async (req) =>
+      phoneOrFail().pendingSignup(
+        req.tenant!.id,
+        browserSecretSchema.parse(req.cookies[signupCookie]),
+      ),
+  );
+  // Gives the name and agrees to the terms: the account is created and the person is signed in.
+  app.post(
+    '/api/v1/auth/phone/signup',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: tokensResponseSchema } },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const process = phoneOrFail();
+      const input = phoneSignupInputSchema.parse(req.body);
+      const pendingId = browserSecretSchema.parse(req.cookies[signupCookie]);
+      const result = await process.signup(req.tenant!.id, pendingId, input, req.id);
+      reply.clearCookie(signupCookie, cookieOptions);
+      reply.setCookie(sessionCookie, result.sessionId, {
+        ...cookieOptions,
+        maxAge: config.SESSION_TTL_SECONDS,
+      });
+      return {
+        accessToken: result.accessToken,
+        csrfToken: result.csrfToken,
+        expiresIn: result.expiresIn,
+      };
+    },
+  );
+  // ---- The signed-in member's own sign-in methods ----
+  // These are called with the access token, so they need no cookie and no CSRF token.
+  app.get(
+    '/api/v1/me/sign-in-methods',
+    { schema: { response: { 200: signInMethodsResponseSchema } } },
+    async (req) => {
+      const found = await registrations.signInMethods(req.tenant!.id, req.principal!.id);
+      if (!found) throw new AppError(403, 'ACCOUNT_NOT_ACTIVE');
+      return {
+        email: found.email,
+        emailVerified: found.emailVerified,
+        phone: found.phone ? maskPhone(found.phone) : null,
+        hasPassword: found.hasPassword,
+        google: found.google,
+      };
+    },
+  );
+  // Sends a code to a number the member wants to add or change to.
+  app.post(
+    '/api/v1/me/phone/start',
+    {
+      config: { rateLimit: { max: 10, timeWindow: 600000 } },
+      schema: { response: { 202: codeSentResponseSchema } },
+    },
+    async (req, reply) => {
+      const process = phoneOrFail();
+      const input = phoneAttachStartInputSchema.parse(req.body);
+      const sent = await process.sendAttachCode(
+        { agencyId: req.tenant!.id, agencyName: req.tenant!.name },
+        req.principal!,
+        input.phone,
+        input.locale,
+      );
+      return reply.code(202).send({ status: 'code_sent', ...sent });
+    },
+  );
+  // Checks that code and makes the number the member's own, for signing in as well.
+  app.post(
+    '/api/v1/me/phone/verify',
+    {
+      config: { rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: statusResponseSchema } },
+    },
+    async (req) => {
+      const process = phoneOrFail();
+      const input = phoneAttachConfirmInputSchema.parse(req.body);
+      await process.confirmAttach(req.tenant!.id, req.principal!, input.phone, input.code, req.id);
+      return { status: 'phone_added' };
     },
   );
   // Restores the browser session after a reload or in a new tab. It needs only the session cookie

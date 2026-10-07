@@ -95,6 +95,7 @@ async function setup(role: 'admin' | 'agent' | 'member' = 'agent') {
       assign: record('clients.assign', clientDetail),
       listStaff: record('clients.staff', []),
     },
+    registrations: { signInMethods: async () => null },
     identities: {
       tenant: async () => ({
         id: agency,

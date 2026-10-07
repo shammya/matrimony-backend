@@ -389,6 +389,126 @@ paths:
         '404': { $ref: '#/components/responses/TenantNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /api/v1/auth/phone/start:
+    post:
+      tags: [Auth]
+      summary: Send a code to sign in or register with a phone number
+      description: |
+        Public, 10 per 10 minutes by address, same-origin only. Sends a six-digit code by text
+        message to the number. It answers and sends the same whether or not the number has an
+        account, and one request serves both signing in and registering. A code works once, for 5
+        minutes, and asking again replaces it. A number can be sent one code a minute and 5 an hour,
+        and an agency 2000 a day: 429 `CODE_RATE_LIMITED` with `Retry-After`. 502
+        `SMS_UNAVAILABLE` when the gateway does not accept the message, 404
+        `PHONE_NOT_CONFIGURED` when no sender is set up. Numbers are stored as E.164; Bangladeshi
+        mobile numbers may be written `01712345678`, `8801712345678` or `+8801712345678`, and
+        Bengali digits are accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PhoneStartInput' }
+      responses:
+        '202':
+          description: A code was sent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CodeSent' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/phone/verify:
+    post:
+      tags: [Auth]
+      summary: Check the code
+      description: |
+        Public, 10 per minute by address, same-origin only. A right code uses the code up. When the
+        number belongs to an account, 200 signs the person in exactly like a login (the cookie is
+        set and the tokens are returned); a disabled account is 403 `ACCOUNT_NOT_ACTIVE`. When it
+        has no account, nothing is created: 202 with the strict `matrimony-signup` cookie (10
+        minutes) and the person finishes on `/{locale}/signup-phone` (see `/auth/phone/signup`). A
+        wrong code is 400 `CODE_INVALID` and can be tried again; five wrong ones, a used or an
+        expired code are 400 `CODE_EXPIRED` and a new code must be asked for.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PhoneVerifyInput' }
+      responses:
+        '200':
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '202':
+          description: The number is proven but has no account yet. The person must agree to the terms.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/phone/signup:
+    get:
+      tags: [Auth]
+      summary: The number waiting to finish registering
+      description: |
+        Public, 20 per minute. Needs the `matrimony-signup` cookie. Returns the number the code
+        proved, so the page can ask for the name and the agreement to the terms. 400
+        `LINK_INVALID_OR_EXPIRED` when there is none.
+      responses:
+        '200':
+          description: The proven number.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingPhoneSignup' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [Auth]
+      summary: Give a name, agree to the terms, create the account, and sign in
+      description: |
+        Public, 10 per minute, same-origin only. Needs the `matrimony-signup` cookie. The account
+        is created as a member (no email, no password) with the number the code proved, never one
+        from the request, with the consents and the registration event, and a session starts exactly
+        like a login. Missing agreements are 400 with the field code `required`. The step is used
+        up at once, so a double press cannot create two accounts. 409 `PHONE_RETRY` when an account
+        for the number appeared in the meantime (the number will then sign in).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PhoneSignupInput' }
+      responses:
+        '200':
+          description: Account created and signed in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: An account for the number appeared meanwhile (PHONE_RETRY).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /api/v1/auth/session:
     post:
       tags: [Session]
@@ -464,6 +584,83 @@ paths:
               schema: { $ref: '#/components/schemas/Self' }
         '401': { $ref: '#/components/responses/Error401' }
         '403': { $ref: '#/components/responses/Error403' }
+
+  /api/v1/me/sign-in-methods:
+    get:
+      tags: [Account]
+      summary: What the signed-in account can sign in with
+      description: |
+        For the account settings. The phone number is partly hidden (`+8801••••••678`). An account
+        may have no email (it registered with a phone), no password (it registered with Google or a
+        phone), or no phone.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The sign-in methods of the account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignInMethods' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+
+  /api/v1/me/phone/start:
+    post:
+      tags: [Account]
+      summary: Send a code to a number to add or change to
+      description: |
+        10 per 10 minutes. Same answer and same limits as `/auth/phone/start`, whether or not
+        another account has the number. The code belongs to this account: it cannot be used to sign
+        in, and a code sent for another account cannot be used here.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PhoneStartInput' }
+      responses:
+        '202':
+          description: A code was sent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CodeSent' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/me/phone/verify:
+    post:
+      tags: [Account]
+      summary: Check the code and make the number this account's own
+      description: |
+        10 per minute. A right code adds the number (replacing an earlier one) and records
+        `auth.phone_added`; from then on the number signs in to this account. 409 `PHONE_IN_USE`
+        when another account already has the number (the person proved they hold it, so this
+        reveals nothing they lack). Wrong and old codes are 400 `CODE_INVALID` and `CODE_EXPIRED`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PhoneAttachInput' }
+      responses:
+        '200':
+          description: The number was added.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '409':
+          description: Another account already has this number (PHONE_IN_USE).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /api/v1/me/profile:
     get:
@@ -1650,9 +1847,69 @@ components:
           description: A short machine-readable outcome, such as `verification_sent` or `verified`.
     AuthMethods:
       type: object
-      required: [password, google]
+      required: [password, google, phone]
       properties:
         password: { type: boolean }
+        google: { type: boolean }
+        phone: { type: boolean }
+    PhoneStartInput:
+      type: object
+      additionalProperties: false
+      required: [phone, locale]
+      properties:
+        phone:
+          type: string
+          description: A Bangladeshi mobile number (01712345678, 8801712345678, +8801712345678) or any number with its + and country code. Bengali digits are accepted.
+        locale: { type: string, enum: [bn, en], description: The language of the text message. }
+    PhoneVerifyInput:
+      type: object
+      additionalProperties: false
+      required: [phone, code, locale]
+      properties:
+        phone: { type: string }
+        code: { type: string, description: The six digits (Bengali digits are accepted). }
+        locale: { type: string, enum: [bn, en], description: The language of the pages that follow. }
+    PhoneAttachInput:
+      type: object
+      additionalProperties: false
+      required: [phone, code]
+      properties:
+        phone: { type: string }
+        code: { type: string }
+    CodeSent:
+      type: object
+      required: [status, resendAfter, expiresIn]
+      properties:
+        status: { type: string, enum: [code_sent] }
+        resendAfter: { type: integer, description: Seconds until another code can be asked for. }
+        expiresIn: { type: integer, description: Seconds the code works. }
+    PendingPhoneSignup:
+      type: object
+      required: [phone]
+      properties:
+        phone: { type: string, description: The number the code proved, in E.164 form. }
+    PhoneSignupInput:
+      type: object
+      additionalProperties: false
+      required: [displayName]
+      description: |
+        `displayName` is required. `acceptTerms` and `acceptPrivacy` must be true, and
+        `confirmAuthority` when `onBehalfOfOther` is true; problems come back as the field code
+        `required`. The number comes from the proof, never from the request.
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 100 }
+        acceptTerms: { type: boolean, default: false }
+        acceptPrivacy: { type: boolean, default: false }
+        onBehalfOfOther: { type: boolean, default: false }
+        confirmAuthority: { type: boolean, default: false }
+    SignInMethods:
+      type: object
+      required: [email, emailVerified, phone, hasPassword, google]
+      properties:
+        email: { type: [string, 'null'] }
+        emailVerified: { type: boolean }
+        phone: { type: [string, 'null'], description: Partly hidden. }
+        hasPassword: { type: boolean }
         google: { type: boolean }
     AuthorizationUrl:
       type: object
@@ -2057,6 +2314,8 @@ components:
                 GOOGLE_EMAIL_UNVERIFIED (Google has not confirmed the email), ACCOUNT_HAS_NO_PASSWORD (the account has no
                 password to approve a link with), GOOGLE_ALREADY_LINKED, GOOGLE_RETRY, OAUTH_CHALLENGE_EXPIRED,
                 OAUTH_CONTEXT_MISMATCH, and
+                for phone codes: PHONE_NOT_CONFIGURED, CODE_RATE_LIMITED (with details.retryAfter,
+                seconds), SMS_UNAVAILABLE, CODE_INVALID, CODE_EXPIRED, PHONE_RETRY, PHONE_IN_USE, and
                 for staff: REVIEW_NOT_FOUND, REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED,
                 REVIEW_OUT_OF_DATE, REVIEW_OWN_SUBMISSION, PROFILE_SELF_SERVICE,
                 STATUS_CHANGE_NOT_ALLOWED, AGENT_NOT_AVAILABLE.

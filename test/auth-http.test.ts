@@ -82,6 +82,7 @@ async function build(
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    registrations: { signInMethods: async () => null },
     identities: {
       tenant: async (host) => {
         if (host !== 'localhost') throw new AppError(404, 'TENANT_NOT_FOUND');
@@ -626,6 +627,7 @@ await test('the page is told which ways of signing in are on', async (t) => {
     {
       password: true,
       google: true,
+      phone: false,
     },
   );
   const off = await build({ google: false });
@@ -635,6 +637,7 @@ await test('the page is told which ways of signing in are on', async (t) => {
     {
       password: true,
       google: false,
+      phone: false,
     },
   );
 });

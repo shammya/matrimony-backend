@@ -6,6 +6,7 @@ import type { EventRepository } from '../raw/repository/event-repository.js';
 import type {
   FoundAccount,
   RegistrationRepository,
+  SignInMethods,
 } from '../raw/repository/registration-repository.js';
 
 /**
@@ -18,6 +19,13 @@ export interface RegistrationUnit {
     agencyId: string,
     member: { id: string; displayName: string; email: string; locale: string },
   ): Promise<Account | null>;
+  findByPhone(agencyId: string, phone: string): Promise<FoundAccount | null>;
+  createPhoneMember(
+    agencyId: string,
+    member: { id: string; displayName: string; phone: string; locale: string },
+  ): Promise<Account | null>;
+  phoneTakenByOther(agencyId: string, phone: string, accountId: string): Promise<boolean>;
+  setPhone(agencyId: string, accountId: string, phone: string): Promise<boolean>;
   createCredential(agencyId: string, accountId: string, hash: string): Promise<void>;
   linkIdentity(
     agencyId: string,
@@ -55,6 +63,17 @@ export class RegistrationDbService {
     );
   }
 
+  /** The account whose proven phone number this is, whatever its status. Null when none is. */
+  findByPhone(agencyId: string, phone: string): Promise<FoundAccount | null> {
+    return this.db.transaction(agencyId, (tx) => this.repository.findByPhone(tx, agencyId, phone));
+  }
+
+  signInMethods(agencyId: string, accountId: string): Promise<SignInMethods | null> {
+    return this.db.transaction(agencyId, (tx) =>
+      this.repository.signInMethods(tx, agencyId, accountId),
+    );
+  }
+
   inTransaction<T>(agencyId: string, work: (unit: RegistrationUnit) => Promise<T>): Promise<T> {
     return this.db.transaction(agencyId, (tx) => work(this.unit(tx)));
   }
@@ -64,6 +83,11 @@ export class RegistrationDbService {
     return {
       findByEmail: (agencyId, email) => repo.findByEmail(tx, agencyId, email),
       createMember: (agencyId, member) => repo.createMember(tx, agencyId, member),
+      findByPhone: (agencyId, phone) => repo.findByPhone(tx, agencyId, phone),
+      createPhoneMember: (agencyId, member) => repo.createPhoneMember(tx, agencyId, member),
+      phoneTakenByOther: (agencyId, phone, accountId) =>
+        repo.phoneTakenByOther(tx, agencyId, phone, accountId),
+      setPhone: (agencyId, accountId, phone) => repo.setPhone(tx, agencyId, accountId, phone),
       createCredential: (agencyId, accountId, hash) =>
         repo.createCredential(tx, agencyId, accountId, hash),
       linkIdentity: (agencyId, accountId, identity) =>

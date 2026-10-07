@@ -44,8 +44,12 @@ export const authorizationResponseSchema = {
 export const methodsResponseSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['password', 'google'],
-  properties: { password: { type: 'boolean' }, google: { type: 'boolean' } },
+  required: ['password', 'google', 'phone'],
+  properties: {
+    password: { type: 'boolean' },
+    google: { type: 'boolean' },
+    phone: { type: 'boolean' },
+  },
 } as const;
 /** The account a Google sign-in is waiting to be linked to. */
 export const pendingLinkResponseSchema = {
@@ -60,4 +64,35 @@ export const pendingSignupResponseSchema = {
   additionalProperties: false,
   required: ['email', 'name'],
   properties: { email: { type: 'string' }, name: { type: 'string' } },
+} as const;
+/** A code was sent: when another can be asked for, and how long this one works, in seconds. */
+export const codeSentResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['status', 'resendAfter', 'expiresIn'],
+  properties: {
+    status: { type: 'string' },
+    resendAfter: { type: 'integer' },
+    expiresIn: { type: 'integer' },
+  },
+} as const;
+/** The proven number waiting for its owner to give a name and agree to the terms. */
+export const pendingPhoneSignupResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['phone'],
+  properties: { phone: { type: 'string' } },
+} as const;
+/** What the signed-in account can sign in with. The number is partly hidden. */
+export const signInMethodsResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['email', 'emailVerified', 'phone', 'hasPassword', 'google'],
+  properties: {
+    email: { type: ['string', 'null'] },
+    emailVerified: { type: 'boolean' },
+    phone: { type: ['string', 'null'] },
+    hasPassword: { type: 'boolean' },
+    google: { type: 'boolean' },
+  },
 } as const;

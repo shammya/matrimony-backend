@@ -49,6 +49,7 @@ async function setup(role: 'member' | 'agent' = 'member') {
       requestEdit: record('requestEdit'),
       cancelPending: record('cancelPending', new AppError(404, 'NO_PENDING_REVIEW')),
     },
+    registrations: { signInMethods: async () => null },
     identities: {
       tenant: async () => ({
         id: agency,

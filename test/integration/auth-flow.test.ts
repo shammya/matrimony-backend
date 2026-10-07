@@ -23,11 +23,14 @@ import { RegistrationDbService } from '../../src/db/service/registration-db-serv
 import type { MailMessage } from '../../src/mail/mailer.js';
 import { AccountAccessProcess } from '../../src/process/account-access-process.js';
 import { GoogleAuthProcess } from '../../src/process/google-auth-process.js';
+import { PhoneAuthProcess } from '../../src/process/phone-auth-process.js';
+import { PhoneCodeRepository } from '../../src/cache/repository/phone-code-repository.js';
+import type { SmsMessage } from '../../src/sms/sender.js';
 import type { GoogleIdentityProvider, GoogleProfile } from '../../src/security/google-provider.js';
 import { AuthProcess } from '../../src/process/auth-process.js';
 import { AccessTokens, parseSigningKey } from '../../src/security/access-token.js';
 import { PasswordHasher } from '../../src/security/password-hasher.js';
-import { SecretBox } from '../../src/security/secret-box.js';
+import { SecretBox, digest } from '../../src/security/secret-box.js';
 import { CredentialService } from '../../src/service/credential-service.js';
 import { IdentityService } from '../../src/service/identity-service.js';
 import { RegistrationService } from '../../src/service/registration-service.js';
@@ -127,6 +130,23 @@ await test('the whole email and password journey over HTTP', async (t) => {
     new SecretBox(config.SESSION_ENCRYPTION_KEY),
     pino({ level: 'silent' }),
   );
+  // Text messages are captured, so a test reads the code the way a person would. Everything else
+  // (the codes in Redis, the accounts, the sessions) is real.
+  const texts: SmsMessage[] = [];
+  const phone = new PhoneAuthProcess(
+    {
+      send: async (message) => {
+        texts.push(message);
+      },
+    },
+    new PhoneCodeRepository(redis),
+    throttle,
+    oneTimeTokens,
+    registrations,
+    auth,
+    new SecretBox(config.SESSION_ENCRYPTION_KEY),
+    pino({ level: 'silent' }),
+  );
   const access = new AccountAccessProcess(
     registrations,
     credentials,
@@ -155,6 +175,8 @@ await test('the whole email and password journey over HTTP', async (t) => {
     auth,
     access,
     google,
+    phone,
+    registrations,
   });
   t.after(async () => {
     await app.close();
@@ -165,7 +187,8 @@ await test('the whole email and password journey over HTTP', async (t) => {
 
   const run = Date.now().toString(36) + randomUUID().slice(0, 4);
   const email = (name: string) => `${name}.${run}@example.com`;
-  let visitor = 10;
+  // A random start, because the address limits live in Redis and outlast a test run.
+  let visitor = 10 + Math.floor(Math.random() * 3_000_000);
   /** Each call is a visitor from its own address, so the per-address limits do not mix tests up. */
   const as = (host = 'localhost') => {
     const remoteAddress = `10.${Math.floor(visitor / 65536) % 256}.${Math.floor(visitor / 256) % 256}.${visitor++ % 256}`;
@@ -939,4 +962,433 @@ await test('the whole email and password journey over HTTP', async (t) => {
     ).issue(randomUUID(), 600);
     assert.equal((await me(visit, foreign.token)).statusCode, 401);
   });
+
+  // ---- sign in and register with a phone number ----
+  const numbers = new Map<string, string>();
+  /** A number of its own for each name in this run, so tests never share a code or a limit. */
+  const phoneOf = (name: string) => {
+    if (!numbers.has(name))
+      numbers.set(name, `+88017${String(Math.floor(Math.random() * 1e8)).padStart(8, '0')}`);
+    return numbers.get(name)!;
+  };
+  const askCode = (visit: ReturnType<typeof as>, name: string) =>
+    visit('POST', '/api/v1/auth/phone/start', { body: { phone: phoneOf(name), locale: 'en' } });
+  /** As if a minute had passed since the last code was sent to this number. */
+  const skipTheWait = (name: string) =>
+    redis.del(`matrimony:throttle:phone-gap:${agency}:${digest(phoneOf(name))}`);
+  const lastCodeTo = (name: string) =>
+    /\b(\d{6})\b/.exec(texts.filter((m) => m.to === phoneOf(name)).at(-1)!.text)![1]!;
+  const checkCode = (visit: ReturnType<typeof as>, name: string, code = lastCodeTo(name)) =>
+    visit('POST', '/api/v1/auth/phone/verify', {
+      body: { phone: phoneOf(name), code, locale: 'en' },
+    });
+  const wrongCode = (name: string) => (lastCodeTo(name) === '000000' ? '000001' : '000000');
+  const accountOfPhone = async (name: string, agencyId = agency) =>
+    (
+      await admin.query(
+        `SELECT a.id, a.email, a.phone_verified_at, a.status,
+                (SELECT count(*)::int FROM matrimony.account_credentials c WHERE c.account_id=a.id) AS passwords,
+                (SELECT count(*)::int FROM matrimony.consent_events e WHERE e.account_id=a.id) AS consents
+         FROM matrimony.accounts a WHERE a.agency_id=$1 AND a.phone_e164=$2`,
+        [agencyId, phoneOf(name)],
+      )
+    ).rows;
+  const agree = { acceptTerms: true, acceptPrivacy: true };
+
+  await t.test(
+    'Phone: the sign-in methods on offer include the phone when texts can be sent',
+    async () => {
+      const methods = await as()('GET', '/api/v1/auth/methods');
+      assert.deepEqual(methods.json(), { password: true, google: true, phone: true });
+    },
+  );
+
+  await t.test(
+    'Phone: a new number gets a code, then is asked to agree, and only then has an account',
+    async () => {
+      const visit = as();
+      const asked = await askCode(visit, 'pnew');
+      assert.equal(asked.statusCode, 202);
+      assert.deepEqual(asked.json(), { status: 'code_sent', resendAfter: 60, expiresIn: 300 });
+      assert.match(texts.at(-1)!.text, /your code is \d{6}/);
+      assert.equal(texts.at(-1)!.to, phoneOf('pnew'));
+
+      // A right code for a number with no account signs nobody in and creates nothing.
+      const proven = await checkCode(visit, 'pnew');
+      assert.equal(proven.statusCode, 202);
+      assert.deepEqual(proven.json(), { status: 'signup_required' });
+      assert.equal(cookieFrom(proven, 'matrimony-session'), '');
+      const pending = cookieFrom(proven, 'matrimony-signup');
+      assert.equal(pending.length, 43);
+      assert.equal((await accountOfPhone('pnew')).length, 0);
+      const cookie = { cookie: `matrimony-signup=${pending}` };
+
+      // The page is told the number, and nothing else.
+      const waiting = await visit('GET', '/api/v1/auth/phone/signup', { headers: cookie });
+      assert.deepEqual(waiting.json(), { phone: phoneOf('pnew') });
+
+      // Without a name and the agreements nothing is created, and the step stays open.
+      for (const body of [{}, { displayName: 'Nina' }, { ...agree }]) {
+        const refused = await visit('POST', '/api/v1/auth/phone/signup', { body, headers: cookie });
+        assert.equal(refused.statusCode, 400);
+      }
+      assert.equal((await accountOfPhone('pnew')).length, 0);
+
+      const created = await visit('POST', '/api/v1/auth/phone/signup', {
+        body: { displayName: 'Nina Phone', ...agree },
+        headers: cookie,
+      });
+      assert.equal(created.statusCode, 200);
+      assert.equal(cookieFrom(created, 'matrimony-session').length, 43);
+      const profile = await me(visit, created.json().accessToken);
+      assert.equal(profile.statusCode, 200);
+      assert.equal(profile.json().role, 'member');
+      assert.equal(profile.json().displayName, 'Nina Phone');
+
+      // A member with a proven number, and no email and no password.
+      const rows = await accountOfPhone('pnew');
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].email, null);
+      assert.notEqual(rows[0].phone_verified_at, null);
+      assert.equal(rows[0].status, 'active');
+      assert.equal(rows[0].passwords, 0);
+      assert.equal(rows[0].consents, 2);
+      const events = await admin.query(
+        `SELECT event->>'type' AS type FROM matrimony.event_outbox WHERE event->>'subjectId'=$1 ORDER BY 1`,
+        [rows[0].id],
+      );
+      assert.deepEqual(
+        events.rows.map((r) => r.type),
+        ['account.registered', 'auth.login'],
+      );
+
+      // The step is spent: pressing again cannot create a second account.
+      const again = await visit('POST', '/api/v1/auth/phone/signup', {
+        body: { displayName: 'Nina Phone', ...agree },
+        headers: cookie,
+      });
+      assert.equal(again.statusCode, 400);
+      assert.equal((await accountOfPhone('pnew')).length, 1);
+
+      // From now on the number signs in, as the same account.
+      const second = as();
+      await skipTheWait('pnew');
+      await askCode(second, 'pnew');
+      const back = await checkCode(second, 'pnew');
+      assert.equal(back.statusCode, 200);
+      const same = await me(second, back.json().accessToken);
+      assert.equal(same.json().id, rows[0].id);
+    },
+  );
+
+  await t.test(
+    'Phone: the code is a six-digit number sent once, kept only as a fingerprint, and used up by a right guess',
+    async () => {
+      const visit = as();
+      await askCode(visit, 'pcode');
+      const code = lastCodeTo('pcode');
+      assert.match(code, /^\d{6}$/);
+      // Nothing in Redis can be used to read the code or the number back.
+      const keys = await redis.keys('matrimony:phone-code:*');
+      const stored = await Promise.all(keys.map((k) => redis.hgetall(k)));
+      const everything = JSON.stringify([keys, stored]);
+      assert.equal(everything.includes(code), false);
+      assert.equal(everything.includes(phoneOf('pcode')), false);
+      assert.equal((await checkCode(visit, 'pcode', code)).statusCode, 202);
+      const replay = await checkCode(visit, 'pcode', code);
+      assert.equal(replay.statusCode, 400);
+      assert.equal(replay.json().error.code, 'CODE_EXPIRED');
+    },
+  );
+
+  await t.test(
+    'Phone: a wrong code can be tried again, and five wrong ones cancel the code',
+    async () => {
+      const visit = as();
+      await askCode(visit, 'plock');
+      const right = lastCodeTo('plock');
+      const wrong = wrongCode('plock');
+      for (let i = 0; i < 4; i++) {
+        const refused = await checkCode(visit, 'plock', wrong);
+        assert.equal(refused.statusCode, 400);
+        assert.equal(refused.json().error.code, 'CODE_INVALID');
+      }
+      const last = await checkCode(visit, 'plock', wrong);
+      assert.equal(last.json().error.code, 'CODE_EXPIRED');
+      const late = await checkCode(visit, 'plock', right);
+      assert.equal(late.statusCode, 400);
+      assert.equal(late.json().error.code, 'CODE_EXPIRED');
+      assert.equal((await accountOfPhone('plock')).length, 0);
+    },
+  );
+
+  await t.test(
+    'Phone: a second code within a minute is refused with how long to wait',
+    async () => {
+      const visit = as();
+      assert.equal((await askCode(visit, 'pgap')).statusCode, 202);
+      const second = await askCode(as(), 'pgap');
+      assert.equal(second.statusCode, 429);
+      assert.equal(second.json().error.code, 'CODE_RATE_LIMITED');
+      assert.ok(Number(second.headers['retry-after']) > 0);
+      assert.equal(texts.filter((m) => m.to === phoneOf('pgap')).length, 1);
+    },
+  );
+
+  /** An account that already has this number, made directly so the number is not yet limited. */
+  const accountWithPhone = async (name: string, agencyId = agency) => {
+    const id = randomUUID();
+    await admin.query(
+      `INSERT INTO matrimony.accounts
+        (agency_id, id, role, display_name, phone_e164, phone_verified_at, auth_issuer, auth_subject, status, locale)
+       VALUES ($1, $2::uuid, 'member', $3, $4, now(), 'local', ($2::uuid)::text, 'active', 'en')`,
+      [agencyId, id, `Has ${name}`, phoneOf(name)],
+    );
+    return id;
+  };
+
+  await t.test(
+    'Phone: asking looks exactly the same for a number that has an account and one that has not',
+    async () => {
+      await accountWithPhone('pknown');
+      const known = await askCode(as(), 'pknown');
+      const unknown = await askCode(as(), 'punknown');
+      assert.equal(known.statusCode, 202);
+      assert.deepEqual(known.json(), unknown.json());
+      assert.equal(known.statusCode, unknown.statusCode);
+      assert.equal(
+        texts
+          .filter((m) => m.to === phoneOf('pknown'))
+          .at(-1)!
+          .text.replace(/\d{6}/, 'X'),
+        texts
+          .filter((m) => m.to === phoneOf('punknown'))
+          .at(-1)!
+          .text.replace(/\d{6}/, 'X'),
+      );
+    },
+  );
+
+  await t.test(
+    'Phone: the owner of a number signs in with a code, as their own account',
+    async () => {
+      const id = await accountWithPhone('powns');
+      const visit = as();
+      await askCode(visit, 'powns');
+      const back = await checkCode(visit, 'powns');
+      assert.equal(back.statusCode, 200);
+      assert.equal((await me(visit, back.json().accessToken)).json().id, id);
+    },
+  );
+
+  await t.test(
+    'Phone: a number that has an account signs in with its code, and a disabled one does not',
+    async () => {
+      await signUp('pdisabled');
+      const visit = as();
+      const token = (await logIn(visit, 'pdisabled')).json().accessToken;
+      const start = await visit('POST', '/api/v1/me/phone/start', {
+        body: { phone: phoneOf('pdisabled'), locale: 'en' },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(start.statusCode, 202);
+      const done = await visit('POST', '/api/v1/me/phone/verify', {
+        body: { phone: phoneOf('pdisabled'), code: lastCodeTo('pdisabled') },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(done.statusCode, 200);
+
+      await admin.query(
+        `UPDATE matrimony.accounts SET status='disabled' WHERE agency_id=$1 AND phone_e164=$2`,
+        [agency, phoneOf('pdisabled')],
+      );
+      const other = as();
+      await skipTheWait('pdisabled');
+      await askCode(other, 'pdisabled');
+      const refused = await checkCode(other, 'pdisabled');
+      assert.equal(refused.statusCode, 403);
+      assert.equal(refused.json().error.code, 'ACCOUNT_NOT_ACTIVE');
+      assert.equal(cookieFrom(refused, 'matrimony-session'), '');
+    },
+  );
+
+  await t.test(
+    'Phone: adding a number to an email account, signing in with it, and seeing it hidden',
+    async () => {
+      await signUp('padd');
+      const visit = as();
+      const bearer = { authorization: `Bearer ${(await logIn(visit, 'padd')).json().accessToken}` };
+      const before = await visit('GET', '/api/v1/me/sign-in-methods', { headers: bearer });
+      assert.deepEqual(before.json(), {
+        email: email('padd'),
+        emailVerified: true,
+        phone: null,
+        hasPassword: true,
+        google: false,
+      });
+
+      assert.equal(
+        (
+          await visit('POST', '/api/v1/me/phone/start', {
+            body: { phone: phoneOf('padd'), locale: 'en' },
+            headers: bearer,
+          })
+        ).statusCode,
+        202,
+      );
+      // A wrong code adds nothing.
+      const wrong = await visit('POST', '/api/v1/me/phone/verify', {
+        body: { phone: phoneOf('padd'), code: wrongCode('padd') },
+        headers: bearer,
+      });
+      assert.equal(wrong.statusCode, 400);
+      assert.equal((await accountOfPhone('padd')).length, 0);
+      const added = await visit('POST', '/api/v1/me/phone/verify', {
+        body: { phone: phoneOf('padd'), code: lastCodeTo('padd') },
+        headers: bearer,
+      });
+      assert.equal(added.statusCode, 200);
+      assert.deepEqual(added.json(), { status: 'phone_added' });
+
+      const after = (await visit('GET', '/api/v1/me/sign-in-methods', { headers: bearer })).json();
+      assert.notEqual(after.phone, null);
+      assert.equal(after.phone.includes(phoneOf('padd')), false);
+      assert.ok(
+        after.phone.startsWith(phoneOf('padd').slice(0, 5)) &&
+          after.phone.endsWith(phoneOf('padd').slice(-3)),
+      );
+      const events = await admin.query(
+        `SELECT count(*)::int AS n FROM matrimony.event_outbox WHERE event->>'type'='auth.phone_added' AND event->>'subjectId'=$1`,
+        [(await accountOfPhone('padd'))[0].id],
+      );
+      assert.equal(events.rows[0].n, 1);
+
+      // Now the number signs in, as the very same account that has the email and the password.
+      const login = as();
+      await skipTheWait('padd');
+      await askCode(login, 'padd');
+      const back = await checkCode(login, 'padd');
+      assert.equal(back.statusCode, 200);
+      const same = await me(login, back.json().accessToken);
+      assert.equal(same.json().id, (await accountOfPhone('padd'))[0].id);
+      assert.equal(same.json().displayName, 'Member padd');
+    },
+  );
+
+  await t.test(
+    'Phone: a number that belongs to another account is never added to a second one',
+    async () => {
+      await signUp('pthief');
+      const owner = await accountWithPhone('powner');
+      // Someone signed in as another account, who holds the number's text, is still refused.
+      numbers.set('pthief', phoneOf('powner'));
+      const thief = as();
+      const bearer = {
+        authorization: `Bearer ${(await logIn(thief, 'pthief')).json().accessToken}`,
+      };
+      assert.equal(
+        (
+          await thief('POST', '/api/v1/me/phone/start', {
+            body: { phone: phoneOf('powner'), locale: 'en' },
+            headers: bearer,
+          })
+        ).statusCode,
+        202,
+      );
+      const refused = await thief('POST', '/api/v1/me/phone/verify', {
+        body: { phone: phoneOf('powner'), code: lastCodeTo('powner') },
+        headers: bearer,
+      });
+      assert.equal(refused.statusCode, 409);
+      assert.equal(refused.json().error.code, 'PHONE_IN_USE');
+      const rows = await accountOfPhone('powner');
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].id, owner);
+    },
+  );
+
+  await t.test('Phone: adding or changing a number needs a signed-in member', async () => {
+    const visit = as();
+    for (const url of ['/api/v1/me/phone/start', '/api/v1/me/phone/verify'])
+      assert.equal(
+        (
+          await visit('POST', url, {
+            body: { phone: phoneOf('panon'), code: '123456', locale: 'en' },
+          })
+        ).statusCode,
+        401,
+      );
+    assert.equal((await visit('GET', '/api/v1/me/sign-in-methods')).statusCode, 401);
+    assert.equal(
+      texts.some((m) => m.to === phoneOf('panon')),
+      false,
+    );
+  });
+
+  await t.test(
+    'Phone: a code, and the step that follows it, belong to the agency they began at',
+    async () => {
+      const visit = as();
+      await askCode(visit, 'pscope');
+      const right = lastCodeTo('pscope');
+      // The code does nothing at another agency.
+      const elsewhere = await as('other.localhost')('POST', '/api/v1/auth/phone/verify', {
+        body: { phone: phoneOf('pscope'), code: right, locale: 'en' },
+      });
+      assert.equal(elsewhere.statusCode, 400);
+      assert.equal(elsewhere.json().error.code, 'CODE_EXPIRED');
+
+      const proven = await checkCode(visit, 'pscope', right);
+      const cookie = { cookie: `matrimony-signup=${cookieFrom(proven, 'matrimony-signup')}` };
+      const stolen = await as('other.localhost')('POST', '/api/v1/auth/phone/signup', {
+        body: { displayName: 'X', ...agree },
+        headers: cookie,
+      });
+      assert.equal(stolen.statusCode, 400);
+      assert.equal((await accountOfPhone('pscope', otherAgency)).length, 0);
+      assert.equal((await accountOfPhone('pscope')).length, 0);
+
+      // The same number can have its own account at the other agency.
+      const there = as('other.localhost');
+      await there('POST', '/api/v1/auth/phone/start', {
+        body: { phone: phoneOf('pscope'), locale: 'en' },
+      });
+      const code = /\b(\d{6})\b/.exec(texts.at(-1)!.text)![1]!;
+      const provenThere = await there('POST', '/api/v1/auth/phone/verify', {
+        body: { phone: phoneOf('pscope'), code, locale: 'en' },
+      });
+      const createdThere = await there('POST', '/api/v1/auth/phone/signup', {
+        body: { displayName: 'There', ...agree },
+        headers: { cookie: `matrimony-signup=${cookieFrom(provenThere, 'matrimony-signup')}` },
+      });
+      assert.equal(createdThere.statusCode, 200);
+      assert.equal((await accountOfPhone('pscope', otherAgency)).length, 1);
+      assert.equal((await accountOfPhone('pscope')).length, 0);
+    },
+  );
+
+  await t.test(
+    'Phone: a foreign request, an invalid number and extra fields are refused',
+    async () => {
+      const visit = as();
+      const wrongSite = await visit('POST', '/api/v1/auth/phone/start', {
+        body: { phone: phoneOf('pforeign'), locale: 'en' },
+        headers: { origin: 'https://evil.example' },
+      });
+      assert.equal(wrongSite.statusCode, 403);
+      for (const body of [
+        { phone: '12345', locale: 'en' },
+        { phone: '', locale: 'en' },
+        { locale: 'en' },
+        { phone: phoneOf('pforeign'), locale: 'en', role: 'admin' },
+      ])
+        assert.equal((await visit('POST', '/api/v1/auth/phone/start', { body })).statusCode, 400);
+      assert.equal(
+        texts.some((m) => m.to === phoneOf('pforeign')),
+        false,
+      );
+      const noCookie = await visit('GET', '/api/v1/auth/phone/signup');
+      assert.equal(noCookie.statusCode, 400);
+    },
+  );
 });

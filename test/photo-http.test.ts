@@ -60,6 +60,7 @@ async function setup(role: 'member' | 'agent' = 'member') {
         return image;
       },
     },
+    registrations: { signInMethods: async () => null },
     identities: {
       tenant: async () => ({
         id: agency,

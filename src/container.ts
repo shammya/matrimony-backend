@@ -20,6 +20,9 @@ import { CredentialService } from './service/credential-service.js';
 import { AccountAccessProcess } from './process/account-access-process.js';
 import { GoogleAuthProcess } from './process/google-auth-process.js';
 import { GoogleProvider } from './security/google-provider.js';
+import { PhoneAuthProcess } from './process/phone-auth-process.js';
+import { PhoneCodeRepository } from './cache/repository/phone-code-repository.js';
+import { ConsoleSmsSender } from './sms/sender.js';
 import { SecretBox } from './security/secret-box.js';
 import { AuthProcess } from './process/auth-process.js';
 import { createMongo } from './mongo/config/client.js';
@@ -115,6 +118,20 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       box,
       logger,
     );
+    // Phone sign-in is on only when a way to send the codes is configured.
+    const phone =
+      config.SMS_DRIVER === 'console'
+        ? new PhoneAuthProcess(
+            new ConsoleSmsSender((text) => process.stdout.write(`${text}\n`)),
+            new PhoneCodeRepository(redis),
+            throttle,
+            oneTimeTokens,
+            registrations,
+            auth,
+            box,
+            logger,
+          )
+        : undefined;
     // Sign-in with Google is on only when both settings are given.
     const google =
       config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET
@@ -141,6 +158,8 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       auth,
       access,
       google,
+      phone,
+      registrations,
       photos: new PhotoProcess(
         new PhotoService(new PhotoDbService(db, new PhotoRepository(), new EventRepository())),
         storage,

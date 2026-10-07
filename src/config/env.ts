@@ -56,6 +56,10 @@ const schema = z
     SMTP_TLS: z.enum(['starttls', 'implicit', 'none']).default('starttls'),
     SMTP_USER: z.string().min(1).optional(),
     SMTP_PASSWORD: z.string().min(1).optional(),
+    // How the codes for phone sign-in are sent. `console` prints each text, with its code, in the
+    // backend's terminal, for development only. Left out, phone sign-in is not offered. A real gateway
+    // plugs into the SmsSender boundary; production refuses `console`.
+    SMS_DRIVER: z.enum(['console']).optional(),
     // Sign-in with Google. Both or neither: without them the Google button is not offered. Register
     // each agency's exact callback address (https://<host>/api/v1/auth/google/callback) with Google.
     GOOGLE_CLIENT_ID: z.string().min(1).optional(),
@@ -136,6 +140,12 @@ const schema = z
         message: 'Configure TLS with DB_SSL, not URL flags',
       });
     if (c.NODE_ENV === 'production') {
+      if (c.SMS_DRIVER === 'console')
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SMS_DRIVER'],
+          message: 'Production needs a real SMS gateway, not the development console',
+        });
       if (c.MAIL_DRIVER !== 'smtp')
         ctx.addIssue({
           code: 'custom',

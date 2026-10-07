@@ -2,9 +2,19 @@ import type { Account } from '../../../bo/identity.js';
 import type { ConsentRecord } from '../../../bo/registration.js';
 import type { Transaction } from '../../config/database.js';
 import { accountRow } from '../../entity/identity.js';
-import { accountWithStatusRow } from '../../entity/registration.js';
+import { accountWithStatusRow, signInMethodsRow } from '../../entity/registration.js';
 import { mapAccount } from '../mapper/identity.js';
 import { identityLinkQueries, registrationQueries } from '../query/registration.js';
+
+/** What an account can sign in with. */
+export interface SignInMethods {
+  email: string | null;
+  emailVerified: boolean;
+  /** The number, in E.164 form, only when a code proved it. */
+  phone: string | null;
+  hasPassword: boolean;
+  google: boolean;
+}
 
 export interface FoundAccount {
   account: Account;
@@ -23,6 +33,78 @@ export class RegistrationRepository {
     if (!row) return null;
     const parsed = accountWithStatusRow.parse(row);
     return { account: mapAccount(parsed), status: parsed.status };
+  }
+
+  /** The account whose proven phone number this is, whatever its status. Null when none is. */
+  async findByPhone(
+    tx: Transaction,
+    agencyId: string,
+    phone: string,
+  ): Promise<FoundAccount | null> {
+    const result = await tx.query(registrationQueries.accountByPhone, [agencyId, phone]);
+    const row = result.rows[0];
+    if (!row) return null;
+    const parsed = accountWithStatusRow.parse(row);
+    return { account: mapAccount(parsed), status: parsed.status };
+  }
+
+  /** The new member, or null when the number already has an account. */
+  async createPhoneMember(
+    tx: Transaction,
+    agencyId: string,
+    member: { id: string; displayName: string; phone: string; locale: string },
+  ): Promise<Account | null> {
+    const result = await tx.query(registrationQueries.insertPhoneAccount, [
+      agencyId,
+      member.id,
+      member.displayName,
+      member.phone,
+      member.locale,
+    ]);
+    return result.rows[0] ? mapAccount(accountRow.parse(result.rows[0])) : null;
+  }
+
+  /** True when another account already uses this number. */
+  async phoneTakenByOther(
+    tx: Transaction,
+    agencyId: string,
+    phone: string,
+    accountId: string,
+  ): Promise<boolean> {
+    const result = await tx.query(registrationQueries.phoneTakenByOther, [
+      agencyId,
+      phone,
+      accountId,
+    ]);
+    return result.rowCount === 1;
+  }
+
+  /** True when the active account now has the number. */
+  async setPhone(
+    tx: Transaction,
+    agencyId: string,
+    accountId: string,
+    phone: string,
+  ): Promise<boolean> {
+    const result = await tx.query(registrationQueries.setPhone, [agencyId, accountId, phone]);
+    return result.rowCount === 1;
+  }
+
+  async signInMethods(
+    tx: Transaction,
+    agencyId: string,
+    accountId: string,
+  ): Promise<SignInMethods | null> {
+    const result = await tx.query(registrationQueries.signInMethods, [agencyId, accountId]);
+    if (!result.rows[0]) return null;
+    const row = signInMethodsRow.parse(result.rows[0]);
+    return {
+      email: row.email,
+      emailVerified: row.email_verified,
+      phone: row.phone_verified ? row.phone_e164 : null,
+      hasPassword: row.has_password,
+      google: row.google,
+    };
   }
 
   /** The new member, or null when the email already has an account. */

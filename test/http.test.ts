@@ -32,6 +32,7 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    registrations: { signInMethods: async () => null },
     identities: {
       tenant: async (host) => {
         if (host !== 'localhost') throw new AppError(404, 'TENANT_NOT_FOUND');
