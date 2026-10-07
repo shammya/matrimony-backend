@@ -5,7 +5,16 @@ import type { Redis } from 'ioredis';
 import { buildApp } from '../src/controller/app.js';
 import { AppError } from '../src/exception/app-error.js';
 import type { ProfileActor } from '../src/service/profile-service.js';
-import { account, agency, config, unusedPhotos, unusedReviews, unusedClients } from './fixtures.js';
+import {
+  account,
+  agency,
+  config,
+  unusedPhotos,
+  unusedReviews,
+  unusedClients,
+  authFor,
+  unusedAccess,
+} from './fixtures.js';
 
 const redis = {
   defineCommand: () => {},
@@ -49,21 +58,8 @@ async function setup(role: 'member' | 'agent' = 'member') {
         publicConfig: { branches: [], successStories: [] },
       }),
     },
-    auth: {
-      authenticate: async () => ({ ...account, role, subject: 's' }),
-      begin: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
-      beginRegistration: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
-      complete: async () => {
-        throw new Error('unused');
-      },
-      bootstrap: async () => {
-        throw new Error('unused');
-      },
-      refresh: async () => {
-        throw new Error('unused');
-      },
-      logout: async () => {},
-    },
+    auth: authFor(async () => ({ ...account, role })),
+    access: unusedAccess,
   });
   const call = (method: 'GET' | 'PUT' | 'POST' | 'DELETE', url: string, payload?: unknown) =>
     app.inject({

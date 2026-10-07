@@ -182,6 +182,9 @@ await test('production does not accept a local disk, which a second server could
     DB_SSL: 'verify-full',
     REDIS_URL: 'rediss://localhost:6379',
     MONGO_URL: 'mongodb+srv://example.invalid/',
+    MAIL_DRIVER: 'smtp',
+    MAIL_FROM: 'no-reply@example.com',
+    SMTP_HOST: 'smtp.example.com',
   };
   assert.throws(() => loadConfig(production), /STORAGE_DRIVER/);
   assert.doesNotThrow(() =>

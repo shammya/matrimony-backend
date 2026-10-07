@@ -34,6 +34,8 @@ flowchart LR
 
 ## Authentication
 
+> **Superseded on 7 October 2026.** The external-provider design below was replaced by the application's own sign-in. The current design, and the reasons for the change, are in [authentication.md](authentication.md). This section is kept as the record of the earlier decision.
+
 Provider-neutral OAuth/OIDC was confirmed by the user. An external authorization server issues JWT access tokens and refresh tokens. Use Authorization Code + S256 PKCE, state, nonce, discovery and JWKS verification. No password grant or home-grown token issuer. Validate signature, allowed algorithm, issuer, API audience, subject, expiration and configured API scope. Identity alone does not create or upgrade local accounts.
 
 The API acts as a confidential OAuth client. Store refresh tokens encrypted in Redis, bound to tenant, subject and a random browser session. The HttpOnly cookie contains only a random session identifier. Return access tokens in JSON for memory-only frontend use; never redirect with tokens in a URL. Protected routes require a Bearer JWT and a matching active session record, then re-read the tenant-local account/role. This permits immediate local logout and prevents a token established on one agency being replayed at another.

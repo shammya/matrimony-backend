@@ -8,8 +8,16 @@ import { EventDbService } from './db/service/event-db-service.js';
 import { IdentityService } from './service/identity-service.js';
 import { createRedis } from './cache/config/redis.js';
 import { SessionRepository } from './cache/repository/session-repository.js';
-import { OidcProvider } from './security/oidc-provider.js';
-import { JwtVerifier } from './security/jwt-verifier.js';
+import { AccessTokens, parseSigningKey } from './security/access-token.js';
+import { PasswordHasher } from './security/password-hasher.js';
+import { OneTimeTokenRepository } from './cache/repository/one-time-token-repository.js';
+import { ThrottleRepository } from './cache/repository/throttle-repository.js';
+import { ConsoleMailer, type Mailer } from './mail/mailer.js';
+import { SmtpMailer } from './mail/smtp-mailer.js';
+import { CredentialRepository } from './db/raw/repository/credential-repository.js';
+import { CredentialDbService } from './db/service/credential-db-service.js';
+import { CredentialService } from './service/credential-service.js';
+import { AccountAccessProcess } from './process/account-access-process.js';
 import { SecretBox } from './security/secret-box.js';
 import { AuthProcess } from './process/auth-process.js';
 import { createMongo } from './mongo/config/client.js';
@@ -36,13 +44,30 @@ import { ClientRepository } from './db/raw/repository/client-repository.js';
 import { ClientDbService } from './db/service/client-db-service.js';
 import { ClientService } from './service/client-service.js';
 import { EventDeliveryProcess } from './process/event-delivery-process.js';
+/** The console driver is for development only: the configuration refuses it in production. */
+function createMailer(config: AppConfig): Mailer {
+  if (config.MAIL_DRIVER === 'console')
+    return new ConsoleMailer((text) =>
+      process.stdout.write(`${text}
+`),
+    );
+  return new SmtpMailer({
+    host: config.SMTP_HOST!,
+    port: config.SMTP_PORT,
+    tls: config.SMTP_TLS,
+    ...(config.SMTP_USER && config.SMTP_PASSWORD
+      ? { user: config.SMTP_USER, password: config.SMTP_PASSWORD }
+      : {}),
+    from: config.MAIL_FROM!,
+    timeoutMs: config.IO_TIMEOUT_MS * 2,
+  });
+}
 export async function createApiContainer(config: AppConfig, logger: Logger) {
   const db = createDatabase(config, logger);
   const redis = createRedis(config, logger);
   try {
     await db.ready();
     await redis.connect();
-    const { provider, jwksUri } = await OidcProvider.discover(config);
     const storage = createFileStorage(config);
     const profiles = new ProfileService(
       new ProfileDbService(db, new ProfileRepository(), new EventRepository()),
@@ -51,39 +76,47 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       new IdentityDbService(db, new IdentityRepository()),
       config.TENANT_HOSTS,
     );
+    const box = new SecretBox(config.SESSION_ENCRYPTION_KEY);
+    const sessions = new SessionRepository(redis);
+    const throttle = new ThrottleRepository(redis);
+    const credentials = new CredentialService(
+      new CredentialDbService(db, new CredentialRepository(), new EventRepository()),
+      new PasswordHasher(),
+      logger,
+    );
+    const accessTokens = new AccessTokens(parseSigningKey(config.AUTH_JWT_PRIVATE_KEY));
     const auth = new AuthProcess(
-      provider,
-      JwtVerifier.remote(
-        jwksUri,
-        config.OIDC_ISSUER,
-        config.OIDC_AUDIENCE,
-        config.OIDC_REQUIRED_SCOPE,
-        config.IO_TIMEOUT_MS,
-      ),
-      new SessionRepository(redis),
+      credentials,
+      accessTokens,
+      sessions,
       identities,
+      throttle,
+      new EventDbService(db, new EventRepository()),
+      {
+        sessionTtl: config.SESSION_TTL_SECONDS,
+        accessTtl: config.ACCESS_TOKEN_TTL_SECONDS,
+        maxSessions: config.MAX_SESSIONS_PER_ACCOUNT,
+      },
+    );
+    const access = new AccountAccessProcess(
       new RegistrationService(
         new RegistrationDbService(db, new RegistrationRepository(), new EventRepository()),
       ),
-      new EventDbService(db, new EventRepository()),
-      new SecretBox(config.SESSION_ENCRYPTION_KEY),
-      config.SESSION_TTL_SECONDS,
+      credentials,
+      new OneTimeTokenRepository(redis),
+      throttle,
+      sessions,
+      createMailer(config),
+      box,
       logger,
     );
     return {
       config,
       logger,
       redis,
-      // Development only. Never set in production: the configuration refuses it there.
-      devSms:
-        config.NODE_ENV !== 'production' && config.DEV_SMS_SINK_SECRET
-          ? {
-              secret: config.DEV_SMS_SINK_SECRET,
-              write: (line: string) => process.stdout.write(`${line}\n`),
-            }
-          : undefined,
       identities,
       auth,
+      access,
       photos: new PhotoProcess(
         new PhotoService(new PhotoDbService(db, new PhotoRepository(), new EventRepository())),
         storage,
@@ -111,6 +144,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
         await redis.ping();
       },
       close: async () => {
+        await access.idle();
         redis.disconnect();
         await db.close();
       },

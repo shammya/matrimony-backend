@@ -8,6 +8,7 @@ import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config/env.js';
 import type { AuthProcess } from '../process/auth-process.js';
+import type { AccountAccessProcess } from '../process/account-access-process.js';
 import type { IdentityService } from '../service/identity-service.js';
 import { bearerSchema, selfResponseSchema } from '../io/http/contracts.js';
 import { accountResponse } from '../factory/account-response.js';
@@ -19,7 +20,6 @@ import { registerReviewController } from './review-controller.js';
 import { registerClientController } from './client-controller.js';
 import type { ReviewProcess } from '../process/review-process.js';
 import type { ClientService } from '../service/client-service.js';
-import { registerDevSmsSink, type DevSmsSink } from './dev-sms-controller.js';
 import type { PhotoProcess } from '../process/photo-process.js';
 import { fieldProblems } from '../io/http/validation.js';
 import type { ProfileService } from '../service/profile-service.js';
@@ -39,14 +39,13 @@ export interface AppDependencies {
     | 'assign'
     | 'listStaff'
   >;
-  /** Development only: prints the sign-in code the identity provider would have texted. */
-  devSms?: DevSmsSink;
   config: AppConfig;
   logger: Logger;
   redis: Redis;
-  auth: Pick<
-    AuthProcess,
-    'begin' | 'beginRegistration' | 'complete' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'
+  auth: Pick<AuthProcess, 'login' | 'bootstrap' | 'authenticate' | 'refresh' | 'logout'>;
+  access: Pick<
+    AccountAccessProcess,
+    'startRegistration' | 'verifyEmail' | 'requestPasswordReset' | 'resetPassword'
   >;
   identities: Pick<IdentityService, 'tenant'>;
   photos: Pick<PhotoProcess, 'list' | 'upload' | 'remove' | 'makePrimary' | 'image'>;
@@ -127,6 +126,9 @@ export async function buildApp(deps: AppDependencies) {
         'Request failed',
       );
     if (status === 401) reply.header('www-authenticate', 'Bearer');
+    // A pause (too many attempts, too many emails) says how long to wait.
+    if (known && typeof error.details?.retryAfter === 'number')
+      reply.header('retry-after', String(error.details.retryAfter));
     const details = known
       ? error.details
       : error instanceof ZodError
@@ -162,11 +164,10 @@ export async function buildApp(deps: AppDependencies) {
   app.get('/api/v1/me', { schema: { response: { 200: selfResponseSchema } } }, async (req) =>
     accountResponse(req.principal!),
   );
-  registerAuthController(app, deps.auth, config);
+  registerAuthController(app, deps.auth, deps.access, config);
   registerProfileController(app, deps.profiles);
   registerPhotoController(app, deps.photos);
   registerReviewController(app, deps.reviews);
   registerClientController(app, deps.clients);
-  if (deps.devSms && config.NODE_ENV !== 'production') registerDevSmsSink(app, deps.devSms);
   return app;
 }

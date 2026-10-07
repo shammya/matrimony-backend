@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from 'node:crypto';
+import type { Account } from '../src/bo/identity.js';
 import { loadConfig } from '../src/config/env.js';
 export const agency = '11111111-1111-4111-8111-111111111111';
 export const otherAgency = '22222222-2222-4222-8222-222222222222';
@@ -9,10 +11,9 @@ export const env = {
   MONGO_URL: 'mongodb://localhost:27017',
   REDIS_URL: 'redis://localhost:6379',
   TENANT_HOSTS: JSON.stringify({ localhost: agency }),
-  OIDC_ISSUER: 'https://identity.example.com',
-  OIDC_CLIENT_ID: 'client',
-  OIDC_CLIENT_SECRET: 'secret',
-  OIDC_AUDIENCE: 'api',
+  AUTH_JWT_PRIVATE_KEY: generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+    .privateKey.export({ type: 'pkcs8', format: 'pem' })
+    .toString(),
   SESSION_ENCRYPTION_KEY: 'ab'.repeat(32),
 };
 export const config = loadConfig(env);
@@ -66,3 +67,18 @@ export const unusedClients = {
   assign: unused,
   listStaff: unused,
 };
+
+/** The auth and access processes for tests about other routes: only the given bearer token works. */
+export const unusedAccess = {
+  startRegistration: unused,
+  verifyEmail: unused,
+  requestPasswordReset: unused,
+  resetPassword: unused,
+};
+export const authFor = (authenticate: (agencyId: string, token: string) => Promise<Account>) => ({
+  authenticate,
+  login: unused,
+  bootstrap: unused,
+  refresh: unused,
+  logout: async () => {},
+});

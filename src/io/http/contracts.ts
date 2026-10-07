@@ -26,3 +26,10 @@ export const tokensResponseSchema = {
     expiresIn: { type: 'integer' },
   },
 } as const;
+/** A short machine-readable outcome, for steps that return nothing else. */
+export const statusResponseSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['status'],
+  properties: { status: { type: 'string' } },
+} as const;

@@ -12,8 +12,9 @@ export class IdentityService {
     if (!tenant || tenant.hostname !== hostname) throw new AppError(404, 'TENANT_NOT_FOUND');
     return tenant;
   }
-  async account(agencyId: string, issuer: string, subject: string) {
-    const account = await this.db.account(agencyId, issuer, subject);
+  /** The active account with this id, read fresh so a disabled account or a changed role applies at once. */
+  async account(agencyId: string, accountId: string) {
+    const account = await this.db.account(agencyId, accountId);
     if (!account) throw new AppError(403, 'ACCOUNT_NOT_ACTIVE');
     return account;
   }

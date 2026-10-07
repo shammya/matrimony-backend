@@ -8,6 +8,8 @@ import {
   config,
   account,
   agency,
+  authFor,
+  unusedAccess,
   unusedPhotos,
   unusedReviews,
   unusedClients,
@@ -42,24 +44,11 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
         };
       },
     },
-    auth: {
-      authenticate: async (_agency, token) => {
-        if (token !== 'valid.jwt.token') throw new AppError(401, 'INVALID_ACCESS_TOKEN');
-        return { ...account, subject: 'private-subject' };
-      },
-      begin: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
-      beginRegistration: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
-      complete: async () => {
-        throw new Error('unused');
-      },
-      bootstrap: async () => {
-        throw new Error('unused');
-      },
-      refresh: async () => {
-        throw new Error('unused');
-      },
-      logout: async () => {},
-    },
+    auth: authFor(async (_agency, token) => {
+      if (token !== 'valid.jwt.token') throw new AppError(401, 'INVALID_ACCESS_TOKEN');
+      return account;
+    }),
+    access: unusedAccess,
   });
   t.after(() => app.close());
   app.get('/api/v1/new-route', async () => ({ ok: true }));
@@ -76,7 +65,7 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
   assert.equal((await call('/api/v1/admin-check', 'Bearer valid.jwt.token')).statusCode, 403);
   const me = await call('/api/v1/me', 'Bearer valid.jwt.token');
   assert.equal(me.statusCode, 200);
-  assert.equal(me.json().subject, undefined);
+  assert.deepEqual(Object.keys(me.json()).sort(), ['agencyId', 'displayName', 'id', 'role']);
   assert.equal(me.headers['cache-control'], 'no-store');
   const cross = await app.inject({
     url: '/api/v1/me',

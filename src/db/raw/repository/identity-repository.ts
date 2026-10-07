@@ -6,8 +6,8 @@ export class IdentityRepository {
     const result = await tx.query(identityQueries.tenant, [agencyId]);
     return result.rows[0] ? mapTenant(result.rows[0]) : null;
   }
-  async account(tx: Transaction, agencyId: string, issuer: string, subject: string) {
-    const result = await tx.query(identityQueries.account, [agencyId, issuer, subject]);
+  async account(tx: Transaction, agencyId: string, accountId: string) {
+    const result = await tx.query(identityQueries.account, [agencyId, accountId]);
     return result.rows[0] ? mapAccount(result.rows[0]) : null;
   }
 }

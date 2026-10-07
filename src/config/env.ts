@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseSigningKey } from '../security/access-token.js';
 
 const integer = (value: number, min = 1, max = 65535) =>
   z.coerce.number().int().min(min).max(max).default(value);
@@ -36,24 +37,29 @@ const schema = z
     IO_TIMEOUT_MS: integer(5000),
     REDIS_URL: url,
     TENANT_HOSTS: tenantMap,
-    OIDC_ISSUER: url,
-    OIDC_CLIENT_ID: z.string().min(1),
-    OIDC_CLIENT_SECRET: z.string().min(1),
-    OIDC_AUDIENCE: z.string().min(1),
-    OIDC_SCOPE: z.string().default('openid offline_access matrimony:api'),
-    // Optional name of the provider's phone (SMS) connection, so registration goes straight to it.
-    OIDC_REGISTER_CONNECTION: z
+    // The key that signs access tokens: an elliptic-curve P-256 private key in PKCS#8 PEM form.
+    // Generate one with `npm run auth:keygen`. Keep it out of the repository.
+    AUTH_JWT_PRIVATE_KEY: z.string().min(1),
+    ACCESS_TOKEN_TTL_SECONDS: integer(600, 60, 3600),
+    // The oldest sessions of an account are ended beyond this many.
+    MAX_SESSIONS_PER_ACCOUNT: integer(10, 1, 50),
+    // How account emails (verification, password reset) are delivered. `console` prints them in
+    // the backend's terminal, for development only. `smtp` sends through any SMTP service.
+    MAIL_DRIVER: z.enum(['console', 'smtp']).default('console'),
+    MAIL_FROM: z
       .string()
-      .regex(/^[A-Za-z0-9_-]{1,100}$/)
+      // `name@example.com` or `Display Name <name@example.com>`; no line breaks, so no header injection.
+      .regex(/^([^<>\r\n@]+<[^<>\s@]+@[^<>\s@]+>|[^<>\s@]+@[^<>\s@]+)$/)
       .optional(),
-    OIDC_REQUIRED_SCOPE: z.string().regex(/^\S+$/).default('matrimony:api'),
+    SMTP_HOST: z.string().min(1).optional(),
+    SMTP_PORT: integer(587),
+    SMTP_TLS: z.enum(['starttls', 'implicit', 'none']).default('starttls'),
+    SMTP_USER: z.string().min(1).optional(),
+    SMTP_PASSWORD: z.string().min(1).optional(),
     SESSION_ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
     SESSION_TTL_SECONDS: integer(28800, 300, 86400),
     WORKER_POLL_MS: integer(1000, 100),
     EVENT_MAX_ATTEMPTS: integer(12, 1, 100),
-    // Development only: lets the identity provider's delivery action print the sign-in code in
-    // the backend's terminal instead of sending a text. Refused in production.
-    DEV_SMS_SINK_SECRET: z.string().min(24).max(200).optional(),
     // Where uploaded files (member photos) are kept. `local` is for development; `s3` works with
     // Amazon S3 and S3-compatible stores. Switching needs these values and no code change.
     STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
@@ -69,15 +75,37 @@ const schema = z
     S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   })
   .superRefine((c, ctx) => {
+    try {
+      parseSigningKey(c.AUTH_JWT_PRIVATE_KEY);
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTH_JWT_PRIVATE_KEY'],
+        message: 'Expected an elliptic-curve P-256 private key in PKCS#8 PEM form',
+      });
+    }
     const protocols: [string, string, string[]][] = [
       ['DATABASE_URL', c.DATABASE_URL, ['postgres:', 'postgresql:']],
       ['REDIS_URL', c.REDIS_URL, ['redis:', 'rediss:']],
       ['MONGO_URL', c.MONGO_URL, ['mongodb:', 'mongodb+srv:']],
-      ['OIDC_ISSUER', c.OIDC_ISSUER, ['https:']],
     ];
     for (const [field, value, allowed] of protocols) {
       if (!allowed.includes(new URL(value).protocol))
         ctx.addIssue({ code: 'custom', path: [field], message: 'Unsupported protocol' });
+    }
+    if (c.MAIL_DRIVER === 'smtp') {
+      for (const [field, value] of [
+        ['MAIL_FROM', c.MAIL_FROM],
+        ['SMTP_HOST', c.SMTP_HOST],
+      ] as const)
+        if (!value)
+          ctx.addIssue({ code: 'custom', path: [field], message: 'Required for smtp email' });
+      if (Boolean(c.SMTP_USER) !== Boolean(c.SMTP_PASSWORD))
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SMTP_PASSWORD'],
+          message: 'Set both the SMTP user and password, or neither',
+        });
     }
     if (c.STORAGE_DRIVER === 's3') {
       if (!c.S3_BUCKET)
@@ -98,11 +126,17 @@ const schema = z
         message: 'Configure TLS with DB_SSL, not URL flags',
       });
     if (c.NODE_ENV === 'production') {
-      if (c.DEV_SMS_SINK_SECRET)
+      if (c.MAIL_DRIVER !== 'smtp')
         ctx.addIssue({
           code: 'custom',
-          path: ['DEV_SMS_SINK_SECRET'],
-          message: 'The development SMS sink must be off in production',
+          path: ['MAIL_DRIVER'],
+          message: 'Production needs a real email delivery service, not the development console',
+        });
+      if (c.SMTP_TLS === 'none')
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SMTP_TLS'],
+          message: 'Production email must be encrypted',
         });
       if (c.STORAGE_DRIVER !== 's3')
         ctx.addIssue({

@@ -2,10 +2,7 @@ import type { Redis } from 'ioredis';
 import { z } from 'zod';
 const sessionSchema = z.object({
   agencyId: z.uuid(),
-  subject: z.string(),
-  issuer: z.string(),
   accountId: z.uuid(),
-  refreshSecret: z.string(),
   accessHash: z.string(),
   csrf: z.string(),
   expiresAt: z.number(),
@@ -16,6 +13,10 @@ export class SessionRepository {
   constructor(private readonly redis: Redis) {}
   private key(id: string) {
     return `matrimony:session:${id}`;
+  }
+  /** Every live session of one account, so they can all be ended together. */
+  private index(accountId: string) {
+    return `matrimony:account-sessions:${accountId}`;
   }
   async put(id: string, session: Session, accessTtl: number) {
     const ttl = Math.max(1, Math.floor(session.expiresAt - Date.now() / 1000));
@@ -28,6 +29,10 @@ export class SessionRepository {
         'EX',
         Math.max(1, Math.min(ttl, accessTtl)),
       )
+      // Scored by when it was made, to the millisecond, so "oldest" is exact even when two
+      // sign-ins happen in the same second.
+      .zadd(this.index(session.accountId), Date.now(), id)
+      .expire(this.index(session.accountId), ttl)
       .exec();
     if (!results || results.some(([err]) => err)) throw new Error('Session storage failed');
   }
@@ -42,7 +47,37 @@ export class SessionRepository {
     return session?.accessHash === hash ? session : null;
   }
   async remove(id: string) {
-    await this.redis.del(this.key(id));
+    const session = await this.get(id);
+    const multi = this.redis.multi().del(this.key(id));
+    if (session) multi.zrem(this.index(session.accountId), id);
+    await multi.exec();
+  }
+  /**
+   * Ends the oldest sessions beyond `max`, so one account cannot pile up sessions without limit
+   * (a person on a new phone is let in; the oldest device is signed out).
+   */
+  async limit(accountId: string, max: number) {
+    const index = this.index(accountId);
+    // Entries of sessions that have expired are older than every live one (all sessions last the
+    // same time), so they are the first to go and never cost a live session its place.
+    const count = await this.redis.zcard(index);
+    if (count <= max) return;
+    const oldest = await this.redis.zrange(index, 0, count - max - 1);
+    if (oldest.length === 0) return;
+    await this.redis
+      .multi()
+      .del(...oldest.map((id) => this.key(id)))
+      .zrem(index, ...oldest)
+      .exec();
+  }
+  /** Ends every session of an account (for example after its password was reset). */
+  async removeAll(accountId: string) {
+    const index = this.index(accountId);
+    const ids = await this.redis.zrange(index, 0, -1);
+    const multi = this.redis.multi();
+    if (ids.length > 0) multi.del(...ids.map((id) => this.key(id)));
+    multi.del(index);
+    await multi.exec();
   }
   async claim(
     id: string,
@@ -82,11 +117,5 @@ export class SessionRepository {
       Math.max(1, Math.min(accessTtl, Math.floor(session.expiresAt - Date.now() / 1000))),
     );
     return result === 1;
-  }
-  async putChallenge(id: string, value: string) {
-    await this.redis.set(`matrimony:challenge:${id}`, value, 'EX', 300);
-  }
-  async takeChallenge(id: string) {
-    return this.redis.getdel(`matrimony:challenge:${id}`);
   }
 }

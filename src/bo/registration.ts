@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { emailSchema, newPasswordSchema, passwordMatchesEmail } from './credentials.js';
 
 /**
  * Registration of a new member. Only members register themselves; agents and admins are
- * created by an admin. The phone number is not part of this input: it is entered at the
- * identity provider, which verifies it with a one-time code, and read back from the provider.
+ * created by an admin. Registering collects an email and a password, and sends a link to that
+ * email; the account is created only when the link is opened (see AccountAccessProcess).
  *
  * Validation messages are stable keys, as for the profile, so the frontend can translate them.
  */
@@ -22,6 +23,8 @@ const fail = (key: string) => ({ error: key });
 
 export const registrationInputSchema = z
   .object({
+    email: emailSchema,
+    password: newPasswordSchema,
     displayName: z
       .string(fail('required'))
       .trim()
@@ -40,15 +43,24 @@ export const registrationInputSchema = z
     if (value.onBehalfOfOther && !value.confirmAuthority) {
       ctx.addIssue({ code: 'custom', message: 'required', path: ['confirmAuthority'] });
     }
+    if (passwordMatchesEmail(value.password, value.email)) {
+      ctx.addIssue({ code: 'custom', message: 'sameAsEmail', path: ['password'] });
+    }
   });
 
 export type RegistrationInput = z.output<typeof registrationInputSchema>;
 
-/** What is kept with the login attempt until the provider has verified the phone. */
+/**
+ * What is kept, sealed, until the person opens the link in their email. It records the document
+ * versions as they were when the person agreed, even if a newer text is published before they
+ * open the link.
+ */
 export const registrationSchema = z.object({
   displayName: z.string().min(1).max(100),
   locale: z.enum(REGISTRATION_LOCALES),
   onBehalfOfOther: z.boolean(),
+  termsVersion: z.string().min(1),
+  privacyVersion: z.string().min(1),
 });
 export type Registration = z.output<typeof registrationSchema>;
 
@@ -57,11 +69,10 @@ export function toRegistration(input: RegistrationInput): Registration {
     displayName: input.displayName,
     locale: input.locale,
     onBehalfOfOther: input.onBehalfOfOther,
+    termsVersion: TERMS_VERSION,
+    privacyVersion: PRIVACY_VERSION,
   };
 }
-
-/** A phone number as the accounts table stores it (E.164). */
-export const PHONE_E164 = /^\+[1-9][0-9]{7,14}$/;
 
 export type ConsentPurpose = 'terms' | 'privacy' | 'profile_representation';
 
@@ -73,12 +84,12 @@ export interface ConsentRecord {
 /** The acceptances to record for a registration. Representing someone else is its own consent. */
 export function consentsFor(registration: Registration): ConsentRecord[] {
   const records: ConsentRecord[] = [
-    { purpose: 'terms', documentVersion: TERMS_VERSION },
-    { purpose: 'privacy', documentVersion: PRIVACY_VERSION },
+    { purpose: 'terms', documentVersion: registration.termsVersion },
+    { purpose: 'privacy', documentVersion: registration.privacyVersion },
   ];
   if (registration.onBehalfOfOther) {
     // The authority statement has no document of its own, so it carries the terms' version.
-    records.push({ purpose: 'profile_representation', documentVersion: TERMS_VERSION });
+    records.push({ purpose: 'profile_representation', documentVersion: registration.termsVersion });
   }
   return records;
 }

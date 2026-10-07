@@ -18,8 +18,8 @@ src/
   bo/                       Business objects and typed event catalog
   factory/                  Business-to-response mapping
   service/                  Single-resource business operations
-  process/                  OAuth/session and event-delivery orchestration
-  security/                 OIDC client, JWT verification, refresh-secret encryption
+  process/                  Sign-in, account access (register, reset) and event-delivery orchestration
+  security/                 Password hashing, access tokens, sealing of stored secrets
   db/
     config/                 PostgreSQL pool and tenant transactions
     entity/                 Database row validation
@@ -48,55 +48,48 @@ Keep interfaces at external boundaries; avoid a matching interface/implementatio
    ```sh
    docker compose exec -T postgres psql -U postgres -d matrimony < scripts/local-seed.sql
    ```
-6. Configure the OIDC provider described below, then link one tenant-local account using `scripts/provision-account.sql`. A verified identity never automatically becomes an administrator.
+6. Put a signing key in `.env` (`npm run auth:keygen`), then create the first administrator: insert the account with `scripts/provision-account.sql` and give it a password with `npm run auth:set-password` (see Authentication below). Nobody becomes an administrator by registering.
 7. Start `npm run dev` and, in another terminal, `npm run dev:worker`.
 
-`npm run build` produces `dist/`; `npm start` and `npm run start:worker` run compiled code. Production injects environment values from its secret manager; the running application never fetches or chooses secrets based on business logic. Startup validates configuration and connections before accepting traffic. The worker currently shares the same validated deployment configuration but does not connect to Redis or the identity provider.
+`npm run build` produces `dist/`; `npm start` and `npm run start:worker` run compiled code. Production injects environment values from its secret manager; the running application never fetches or chooses secrets based on business logic. Startup validates configuration and connections before accepting traffic. The worker currently shares the same validated deployment configuration but does not connect to Redis.
 
-## OAuth/OIDC contract
+## Authentication
 
-Use an HTTPS OIDC provider with S256 PKCE, confidential-client `client_secret_post` authentication, a revocation endpoint, **JWT** API access tokens (RS256 or ES256), and rotating refresh tokens. Configure an API audience matching `OIDC_AUDIENCE` and grant `OIDC_REQUIRED_SCOPE`. `OIDC_AUDIENCE` is a verification setting; configure the provider's API/scope mapping accordingly. Opaque access tokens are deliberately rejected.
-
-Register `http://localhost:3000/api/v1/auth/callback` for development and each agency's exact HTTPS callback for production. Keep the issuer string identical to the token's `iss` and the account's `auth_issuer`. `auth_subject` is the stable provider subject, not an email address. Phone OTP delivery and self-registration will be added as the first identity feature; they are not supplied by this generic OAuth adapter.
+The application runs its own sign-in: email and password today, Google next, phone codes after that. There is no external identity provider. [docs/design/authentication.md](docs/design/authentication.md) records why, how it works, what it protects against and what is still open; read it before changing anything here.
 
 | Endpoint | Protection / result |
 |---|---|
 | `GET /health/live` | Public, process liveness |
 | `GET /health/ready` | Public, PostgreSQL + Redis availability; 503 on failure |
 | `GET /api/v1/public/tenant` | Known active tenant; public branding/config only |
-| `GET /api/v1/auth/authorize` | Creates browser-bound 5-minute state/nonce/PKCE challenge; returns provider URL |
-| `GET /api/v1/auth/callback` | Consumes challenge once, exchanges code, verifies identity and local account, sets the HttpOnly session cookie, then redirects to `/{locale}/auth/complete` (or `/{locale}/login?error=<code>` on a failed login). Never returns tokens |
-| `POST /api/v1/auth/session` | Session cookie + same-origin `Origin`; returns access token and CSRF token. Used by the frontend right after login and to restore a session after a reload or in a new tab |
-| `POST /api/v1/auth/refresh` | Session cookie + same-origin `Origin` + `X-CSRF-Token`; returns rotated access token |
-| `POST /api/v1/auth/logout` | Same browser protection; invalidates local session, attempts provider revocation |
-| `GET /api/v1/me` | Bearer JWT + active tenant-bound session + current local account |
+| `POST /api/v1/auth/register` | Public, same-origin. Emails a link; creates nothing. Always 202, whether or not the email has an account |
+| `POST /api/v1/auth/verify-email` | Public, same-origin. Opens the emailed link: creates the account. Does not sign in |
+| `POST /api/v1/auth/login` | Public, same-origin. Checks email and password, sets the HttpOnly session cookie, returns the tokens |
+| `POST /api/v1/auth/password/forgot` | Public, same-origin. Emails a reset link when the email has an account. Always 202 |
+| `POST /api/v1/auth/password/reset` | Public, same-origin. New password from the emailed link; ends every session of the account |
+| `POST /api/v1/auth/session` | Session cookie + same-origin `Origin`; returns an access token and the CSRF token. Used after a reload or in a new tab |
+| `POST /api/v1/auth/refresh` | Session cookie + same-origin `Origin` + `X-CSRF-Token`; returns a new access token |
+| `POST /api/v1/auth/logout` | Same browser protection; ends the session |
+| `GET /api/v1/me` | Bearer access token + live session + current local account |
 
-New routes require authentication unless explicitly declared public. Staff routes declare allowed roles; resource ownership/assignment checks belong in the relevant use case. JWT roles or user-supplied agency IDs are never authorization sources.
+New routes require authentication unless explicitly declared public. Staff routes declare allowed roles; resource ownership/assignment checks belong in the relevant use case. A role or agency inside a token, or sent by the client, is never an authorization source: the account is read from the database on every request.
 
-After login the callback redirects to the frontend, which calls `POST /api/v1/auth/session` to receive its tokens; the server stores only a hash of the access token, so that call rotates the session through the provider like a refresh. Keep access tokens in frontend memory. The CSRF token may be retained in tab session storage to permit refresh after reload; the browser never sees the refresh token. Refresh secrets are encrypted in Redis; cookies contain random session identifiers. Refresh replaces the previous access-token mapping. Serialize refresh calls in the frontend: duplicate concurrent calls return `409 REFRESH_UNAVAILABLE`. A timeout or crashed refresh flow requires login rather than risking refresh-token reuse. Local logout takes effect immediately for subsequent API calls; already running requests may finish. Provider revocation failure is logged, without restoring the local session.
+**How a session works.** `POST /auth/login` creates a session: a random id in an HttpOnly cookie (`SameSite=Strict`, `__Host-` prefixed and `Secure` in production), with its state in Redis. The response carries a short-lived (default 10 minutes) ES256 **access token** and a **CSRF token**. The page keeps both in memory only; the API accepts the access token only while the session behind it is alive (Redis stores a hash of the token, never the token). Refresh issues a new access token for the same session and does not extend it: a session ends `SESSION_TTL_SECONDS` after sign-in. Sign-out, a password reset and a disabled account cut off the tokens at once. An account keeps at most `MAX_SESSIONS_PER_ACCOUNT` sessions; the oldest are signed out. Serialize refresh calls in the frontend: duplicate concurrent calls return `409 REFRESH_UNAVAILABLE`.
+
+**Passwords.** Hashed with Argon2id (Node's built-in implementation, OWASP's minimum settings; the settings live inside each hash, and a stronger setting upgrades old hashes on the next sign-in). 10 to 128 characters, no composition rules, a short list of well-known passwords refused. Passwords are NFKC-normalised, so look-alike forms are one password. An unknown email, an account with no password and a wrong password all fail the same way and take about as long. After 5 wrong passwords for one email, sign-in for that email pauses for 15 minutes (the count follows the email, not the visitor, so it also protects emails that have no account).
+
+**Registration.** `POST /auth/register` checks the answers and stores them sealed (AES-256-GCM, with the password already hashed) in Redis for 24 hours, then emails a link. No account exists yet, so an address nobody proved cannot be claimed, and nothing is stored in PostgreSQL for someone who never opens the link. Opening the link (`POST /auth/verify-email`) creates the member account, its password, the consent records (with the document versions that were agreed to) and an `account.registered` event in one transaction. The role is always `member`. Because "this person is a member" is private on a matrimony site, registering with an address that already has an account answers exactly the same, and emails the owner a notice instead of a link. One address can be sent 3 emails of each kind per hour.
+
+**Forgotten password.** `POST /auth/password/forgot` emails a one-hour, single-use link when the address has an active account (the answer is the same either way). `POST /auth/password/reset` sets the password, records `auth.password_reset`, ends every session of the account and emails the owner that it changed.
+
+**Email delivery.** `MAIL_DRIVER=console` prints each email, with its link, in the backend terminal (development only; production refuses it). `MAIL_DRIVER=smtp` sends through any SMTP service with `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_TLS` (`starttls` by default; `none` is refused in production), `SMTP_USER` and `SMTP_PASSWORD`. Emails are plain text in Bengali or English and name the agency. The links point at the host the request arrived on, which must be a configured agency hostname; a forwarded header can never change them.
+
+**Keys and secrets.** `AUTH_JWT_PRIVATE_KEY` signs access tokens: generate one with `npm run auth:keygen`, keep it in the secret manager, and use a different key for each environment. Replacing it signs everyone out of their current access tokens (sessions continue; the next refresh signs a new token). `SESSION_ENCRYPTION_KEY` seals the pending registrations.
+
+**Operator commands.** An administrator or staff member who cannot use "forgot password" yet gets a password with
+`npm run auth:set-password -- --agency <uuid> --email <email>` (add `--account <uuid>` to also write the email onto an account that has none). It reads the password without echoing it and uses the migration connection. A verified identity never automatically becomes an administrator.
 
 Use same-origin frontend/API routing. Forwarded-host headers are ignored. Configure the ingress to preserve the allowlisted Host, strip spoofed forwarding headers and perform per-client rate limiting. The API also uses Redis-backed limits; with `trustProxy: false`, requests through one proxy share its IP bucket. Do not change to `trustProxy: true` without a bounded trusted-proxy configuration. Production requires HTTPS ingress, secure host-only cookies, verified database/Mongo TLS and `rediss://`.
-
-## Registration and phone sign-in
-
-Members register themselves with a phone number; agents and admins are created by an admin. The flow:
-
-1. `POST /api/v1/auth/register` checks what the person agreed to (name, language, terms, privacy, and the confirmation of authority when registering for someone else). Nothing is created. The answers are sealed with the one-time login attempt (the challenge cookie), so they cannot be altered or reused.
-2. The browser goes to the identity provider, where the person enters their phone number and the one-time code (SMS).
-3. In the callback, the backend reads the **phone number the provider says it verified**. Only then does `RegistrationService` create the account (role `member`, always), record the consents with the document versions, and append an `account.registered` event, in one transaction. A login never creates an account: someone with no account ends at `/login?error=ACCOUNT_NOT_FOUND`.
-4. Registering again with a sign-in that already has an account is simply a login. A phone number that belongs to a *different* sign-in is refused (`PHONE_ALREADY_REGISTERED`), never linked automatically, because a recycled number could otherwise hand one person's account to another.
-
-Rate limits: the provider limits OTP sending; the API limits starting a registration to 10 per 10 minutes per client address, on top of the general limit.
-
-**Identity provider setup (Auth0, development)**
-
-- Authentication → Passwordless → **SMS**: turn it on, and set the Twilio Account SID, Auth Token and the sender number (or a Messaging Service) in Auth0 only. Enable the connection for the application.
-- With a Twilio **trial** account, messages go only to verified numbers (Phone Numbers → Verified Caller IDs), carry a trial note, and Bangladesh must be enabled under Messaging → Settings → Geo permissions.
-- Registration requests the `phone` scope, and the account is created only from a phone number the provider verified (see `verifiedPhone` in `src/security/oidc-provider.ts`): `phone_number_verified: true`, or, because Auth0 omits that flag for passwordless SMS users, a sign-in through the phone connection itself (subject starting `sms|`, which requires `OIDC_REGISTER_CONNECTION`). An explicit `phone_number_verified: false` is always refused. If registration ends at `REGISTRATION_PHONE_REQUIRED`, the backend logs `REGISTRATION_PHONE_MISSING` with the names (never the values) of the claims it received.
-- Optional `OIDC_REGISTER_CONNECTION` (for example `sms`) sends registration straight to that connection instead of the provider's general sign-in screen.
-- For production, choose a Bangladeshi SMS gateway and connect it in the provider (Auth0 supports a custom phone provider through an Action). Nothing in this application changes. Check delivery, speed and sender-name rules with the real gateway before launch.
-
-**Development SMS sink (no SMS provider needed).** Set `DEV_SMS_SINK_SECRET` (24 or more characters, in `.env` only) and the backend serves `POST /api/v1/dev/sms`, which prints the identity provider's message, including the one-time code, in the backend's terminal as `[dev sms] to +880…: …`. In Auth0 this is done with a **Custom Phone Provider** action (Branding → Phone Provider → Custom; the action's trigger is "Custom Phone Provider", handler `onExecuteCustomPhoneProvider`, the message in `event.notification.recipient` and `event.notification.as_text`). It posts to this endpoint through a public tunnel to the backend (for example `"C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:4000`), sending the secret in the `x-dev-sms-secret` header from an action secret named `DEV_SMS_SECRET`. Also needed in Auth0: the passwordless **SMS** connection (named `sms`) switched on for the application, and Authentication → Authentication Profile set to **Identifier First**, otherwise the New Universal Login ignores the `connection=sms` request and shows email and password. While testing, keep four things running: the WSL keep-alive (`wsl -d Ubuntu -u root -- sleep infinity`, which keeps Redis up), the backend, the tunnel, and the frontend. The endpoint answers 404 without the secret, stores nothing, does not exist when the secret is unset, and the configuration refuses the secret in production. Quick tunnels get a new address each run, so update the action's address when the tunnel restarts. This replaces only the delivery step: it says nothing about real delivery, speed or Bangladesh sender rules, so test those with the real gateway before launch.
 
 The terms and privacy texts are **drafts** (`TERMS_VERSION` and `PRIVACY_VERSION` in `src/bo/registration.ts`, texts in the frontend message files). Change the versions when the final text is published; each acceptance is stored with the version it was given for.
 
@@ -106,7 +99,7 @@ Each process owns one bounded PostgreSQL pool; the worker also owns one MongoCli
 
 For an approval/payment/interest workflow, call `EventDbService.append(tx, event)` inside the same transaction as its business mutation. The event catalog accepts only IDs, event type/version, timestamp and correlation ID—not arbitrary payloads, biodata or tokens. PostgreSQL commits both or neither. The worker leases one due event per agency, idempotently upserts Mongo by event ID, and acknowledges only its current lease. Failed delivery retries with bounded backoff/jitter; exhausted events remain in PostgreSQL. Mongo downtime does not prevent the API from committing events.
 
-Authentication spans the provider, Redis and PostgreSQL, so it is not a distributed transaction. Login/refresh events record the authorized operation before session persistence and do not prove token delivery to a browser. Logout prioritizes local revocation even if the subsequent audit write fails; that failure produces an HTTP/server error and needs operational investigation. Domain events do have transaction-level durability.
+Authentication spans Redis and PostgreSQL, so it is not a distributed transaction. Login/refresh events record the authorized operation before session persistence and do not prove token delivery to a browser. Logout prioritizes local revocation even if the subsequent audit write fails; that failure produces an HTTP/server error and needs operational investigation. Domain events do have transaction-level durability.
 
 Alert on `EVENT_DELIVERY_FAILED` with `exhausted: true`, worker absence, and the oldest undelivered outbox row. Investigate provider/storage failures before replaying an exhausted row; reset its attempts/next-attempt time through an authorized tenant-scoped operator transaction. Define retention and purge delivered outbox rows only after the required audit retention period. Mongo event reads are not exposed by the scaffold; future reads must filter by agency and authorization.
 
@@ -139,7 +132,7 @@ TEST_MONGO_URL=mongodb://localhost:27017 \
 npm run test:integration
 ```
 
-These tests create schemas/test roles and rows in that named test database. They verify real RLS/rollback, pooled-context reset, Redis refresh races, outbox lease fencing and Mongo idempotency. External OIDC exchanges still require acceptance testing against the configured provider. See [validation record](docs/design/scaffold-validation.md).
+These tests create schemas/test roles and rows in that named test database. They verify real RLS/rollback, pooled-context reset, Redis refresh races, outbox lease fencing and Mongo idempotency. The sign-in flows have their own PostgreSQL and Redis tests (`test/integration/registration.test.ts`, `auth-state.test.ts`, `auth-flow.test.ts`); email delivery is tested against a local SMTP server, so it still needs a first run against the real mail service. See [validation record](docs/design/scaffold-validation.md).
 
 The Dockerfile runs compiled code as a non-root user. Run the same image with `node dist/worker.js` for the worker. Run migrations from a separate operator/release environment before deployment, never automatically during API startup. Roll back application images only while the schema remains backward-compatible; there is no destructive automatic down migration. Budget database connections as replicas × pool limit, and provision managed-service backups, alerts and worker supervision before live launch.
 

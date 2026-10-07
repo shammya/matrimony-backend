@@ -13,43 +13,36 @@ export interface FoundAccount {
 
 /** All registration reads and writes. Every method runs inside the transaction it is given. */
 export class RegistrationRepository {
-  async findBySubject(
+  async findByEmail(
     tx: Transaction,
     agencyId: string,
-    issuer: string,
-    subject: string,
+    email: string,
   ): Promise<FoundAccount | null> {
-    const result = await tx.query(registrationQueries.accountBySubject, [
-      agencyId,
-      issuer,
-      subject,
-    ]);
+    const result = await tx.query(registrationQueries.accountByEmail, [agencyId, email]);
     const row = result.rows[0];
     if (!row) return null;
     const parsed = accountWithStatusRow.parse(row);
     return { account: mapAccount(parsed), status: parsed.status };
   }
 
-  async phoneTaken(tx: Transaction, agencyId: string, phone: string): Promise<boolean> {
-    const result = await tx.query(registrationQueries.accountByPhone, [agencyId, phone]);
-    return result.rows.length > 0;
-  }
-
-  /** The new member, or null when the identity or the phone number already has an account. */
+  /** The new member, or null when the email already has an account. */
   async createMember(
     tx: Transaction,
     agencyId: string,
-    member: { displayName: string; phone: string; issuer: string; subject: string; locale: string },
+    member: { id: string; displayName: string; email: string; locale: string },
   ): Promise<Account | null> {
     const result = await tx.query(registrationQueries.insertAccount, [
       agencyId,
+      member.id,
       member.displayName,
-      member.phone,
-      member.issuer,
-      member.subject,
+      member.email,
       member.locale,
     ]);
     return result.rows[0] ? mapAccount(accountRow.parse(result.rows[0])) : null;
+  }
+
+  async createCredential(tx: Transaction, agencyId: string, accountId: string, hash: string) {
+    await tx.query(registrationQueries.insertCredential, [agencyId, accountId, hash]);
   }
 
   async recordConsents(

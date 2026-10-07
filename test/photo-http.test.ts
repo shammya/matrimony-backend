@@ -14,6 +14,8 @@ import {
   unusedClients,
   unusedProfiles,
   unusedReviews,
+  authFor,
+  unusedAccess,
 } from './fixtures.js';
 
 const redis = {
@@ -67,21 +69,8 @@ async function setup(role: 'member' | 'agent' = 'member') {
         publicConfig: { branches: [], successStories: [] },
       }),
     },
-    auth: {
-      authenticate: async () => ({ ...account, role, subject: 's' }),
-      begin: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
-      beginRegistration: async () => ({ challengeId: 'x', authorizationUrl: 'https://issuer' }),
-      complete: async () => {
-        throw new Error('unused');
-      },
-      bootstrap: async () => {
-        throw new Error('unused');
-      },
-      refresh: async () => {
-        throw new Error('unused');
-      },
-      logout: async () => {},
-    },
+    auth: authFor(async () => ({ ...account, role })),
+    access: unusedAccess,
   });
   const call = (
     method: 'GET' | 'PUT' | 'POST' | 'DELETE',

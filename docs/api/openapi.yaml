@@ -84,86 +84,143 @@ paths:
         '400': { $ref: '#/components/responses/Error400' }
         '404': { $ref: '#/components/responses/TenantNotFound' }
 
-  /api/v1/auth/authorize:
-    get:
-      tags: [Auth]
-      summary: Start login
-      description: Public, 10 per minute. Sets the 5-minute `matrimony-challenge` cookie.
-      responses:
-        '200':
-          description: Where to send the browser.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [authorizationUrl]
-                properties:
-                  authorizationUrl: { type: string }
-        '400': { $ref: '#/components/responses/Error400' }
-        '404': { $ref: '#/components/responses/TenantNotFound' }
-        '429': { $ref: '#/components/responses/RateLimited' }
-
   /api/v1/auth/register:
     post:
       tags: [Registration]
       summary: Start registering as a member
       description: |
-        Public, 10 per 10 minutes per client, same-origin only. Checks what the person agreed to
-        and keeps it sealed with a 5-minute login attempt (a cookie), then returns the provider's
-        address. Nothing is created yet. The callback creates the member account only after the
-        provider has verified the phone number, then logs the person in. Registering again with a
-        sign-in that already has an account is simply a login. A login (not a registration) by
-        someone with no account ends at `/{locale}/login?error=ACCOUNT_NOT_FOUND`.
+        Public, 10 per 10 minutes per client address, same-origin only. Nothing is created yet: a
+        link is emailed, and the account exists once it is opened (`/auth/verify-email`). The
+        answer is always 202, whether or not the email already has an account, because that
+        itself is private; an address that has an account is emailed a notice instead of a link.
+        One address can be sent 3 such emails an hour (429 `EMAIL_RATE_LIMITED`, with
+        `details.retryAfter` and a `Retry-After` header). Asking again cancels the earlier link.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/RegisterInput' }
       responses:
-        '200':
-          description: Where to send the browser.
+        '202':
+          description: The link was sent, or the address already has an account.
           content:
             application/json:
-              schema:
-                type: object
-                required: [authorizationUrl]
-                properties:
-                  authorizationUrl: { type: string }
+              schema: { $ref: '#/components/schemas/Status' }
         '400': { $ref: '#/components/responses/Error400' }
         '403': { $ref: '#/components/responses/Error403' }
         '429': { $ref: '#/components/responses/RateLimited' }
-  /api/v1/auth/callback:
-    get:
-      tags: [Auth]
-      summary: Finish login (OAuth redirect target)
+
+  /api/v1/auth/verify-email:
+    post:
+      tags: [Registration]
+      summary: Open the emailed link, which proves the address and creates the account
       description: |
-        Public, 10 per minute. Needs the challenge cookie, which is single use. Never returns
-        tokens: it sets the `matrimony-session` cookie and redirects.
+        Public, 10 per minute, same-origin only. The link works once, for 24 hours, and only at
+        the agency that sent it. The account, its password, the consents and an event are written
+        together. It does not sign the person in: they sign in next. A used, expired or unknown
+        link is 400 `LINK_INVALID_OR_EXPIRED`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LinkToken' }
       responses:
-        '302':
-          description: |
-            Success: `Location: /{locale}/auth/complete` and the session cookie is set.
-            Expected failure: `Location: /{locale}/login?error=<code>` and no session.
-            `{locale}` is the agency's default language (`bn` or `en`).
-          headers:
-            Location:
-              schema: { type: string }
-        '400': { $ref: '#/components/responses/Error400' }
-        '404': { $ref: '#/components/responses/TenantNotFound' }
-        '429': { $ref: '#/components/responses/RateLimited' }
-        '500':
-          description: An unexpected failure. Details are never exposed.
+        '200':
+          description: The account exists. Sign in.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Error' }
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in with email and password
+      description: |
+        Public, 10 per minute per client address, same-origin only. Starts a session: the
+        `matrimony-session` cookie (HttpOnly, SameSite=Strict, `__Host-` and Secure in production)
+        is set, and the tokens come back in the body for the page to keep in memory. After five
+        wrong passwords for one email, sign-in for that email pauses for 15 minutes, even for the
+        right password (429 `TOO_MANY_ATTEMPTS`, with `details.retryAfter` and a `Retry-After`
+        header). An unknown email, an account with no password and a wrong password are all the
+        same 401 `INVALID_CREDENTIALS`. A disabled account is told so (403 `ACCOUNT_NOT_ACTIVE`)
+        only after the right password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginInput' }
+      responses:
+        '200':
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/password/forgot:
+    post:
+      tags: [Auth]
+      summary: Email a password reset link
+      description: |
+        Public, 10 per 10 minutes per client address, same-origin only. Always 202, whether or not
+        the email has an active account. The link works once, for 1 hour. One address can be sent
+        3 reset emails an hour (429 `EMAIL_RATE_LIMITED`). Asking again cancels the earlier link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgotPasswordInput' }
+      responses:
+        '202':
+          description: A link was sent if the email has an account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/password/reset:
+    post:
+      tags: [Auth]
+      summary: Choose a new password with the emailed link
+      description: |
+        Public, 10 per 10 minutes per client address, same-origin only. Sets the password, ends
+        every session of the account, records `auth.password_reset` and emails the owner a notice.
+        A password that breaks the rules is a 400 with field problems and does not use up the
+        link. A used, expired or unknown link is 400 `LINK_INVALID_OR_EXPIRED`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPasswordInput' }
+      responses:
+        '200':
+          description: The password was changed. Sign in with it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /api/v1/auth/session:
     post:
-      tags: [Session handoff]
-      summary: Start or restore the browser session
+      tags: [Session]
+      summary: Restore the browser session
       description: |
-        Needs the session cookie and a same-origin `Origin` header, but no CSRF header: this
-        call issues the CSRF token. A concurrent duplicate returns 409 REFRESH_UNAVAILABLE.
+        For a reload or a new tab: the session cookie alone brings back a working token set. Needs
+        the session cookie and a same-origin `Origin` header, but no CSRF header: this call returns
+        the CSRF token. A concurrent duplicate returns 409 REFRESH_UNAVAILABLE.
       responses:
         '200':
           description: A fresh token set for this session.
@@ -1009,7 +1066,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Provider-issued JWT access token. Keep it in memory only.
+      description: The short-lived access token from sign-in or refresh (ES256). Keep it in memory only.
 
   parameters:
     CsrfToken:
@@ -1408,15 +1465,63 @@ components:
       properties:
         version: { type: integer, minimum: 1 }
 
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: A short machine-readable outcome, such as `verification_sent` or `verified`.
+    LinkToken:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: The one-time secret in the emailed link.
+    LoginInput:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, maxLength: 254, description: Trimmed and lower-cased by the server. }
+        password: { type: string, minLength: 1, maxLength: 256 }
+    ForgotPasswordInput:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email: { type: string, maxLength: 254 }
+    ResetPasswordInput:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        password:
+          type: string
+          description: |
+            10 to 128 characters (counted as a person sees them, so Bengali is not penalised), not a
+            very common password, not made of fewer than 5 different characters. Problems come back
+            as field codes `tooShort`, `tooLong` and `tooWeak`.
     RegisterInput:
       type: object
       additionalProperties: false
-      required: [displayName, locale, acceptTerms, acceptPrivacy]
+      required: [email, password, displayName, locale, acceptTerms, acceptPrivacy]
       description: |
-        What a new member agrees to before going to the identity provider. The phone number is
-        not sent here: it is entered at the provider, verified with a one-time code, and read back
-        from the provider. A role can never be sent; registration only creates a member.
+        What a new member types to register. A role can never be sent; registration only creates a
+        member. The email is proven by the emailed link before the account exists. Field problems
+        come back as codes: `required`, `tooLong`, `invalidEmail`, `tooShort`, `tooWeak`,
+        `sameAsEmail` (the password is the email or its part before the @), `invalidOption`.
       properties:
+        email: { type: string, maxLength: 254, description: Trimmed and lower-cased by the server. }
+        password:
+          type: string
+          description: Same rules as `ResetPasswordInput.password`, and not the email.
         displayName:
           {
             type: string,
@@ -1708,17 +1813,16 @@ components:
                 Stable machine-readable code. Known codes: HOST_INVALID, TENANT_NOT_FOUND,
                 BEARER_TOKEN_REQUIRED, INVALID_ACCESS_TOKEN, SESSION_INVALID, SESSION_EXPIRED,
                 ACCOUNT_NOT_ACTIVE, ROLE_FORBIDDEN, ORIGIN_INVALID, CSRF_INVALID,
-                OAUTH_CHALLENGE_EXPIRED, OAUTH_CONTEXT_MISMATCH, OAUTH_EXCHANGE_FAILED,
-                OAUTH_SUBJECT_MISMATCH, REFRESH_UNAVAILABLE, REFRESH_FAILED_LOGIN_REQUIRED,
+                REFRESH_UNAVAILABLE,
                 INVALID_REQUEST, RATE_LIMITED, REQUEST_REJECTED, INTERNAL_ERROR, and for My profile:
                 PROFILE_NOT_FOUND, PROFILE_VERSION_CONFLICT, PROFILE_LOCKED,
                 PROFILE_EDIT_REQUIRES_REVIEW, PROFILE_STATE_INVALID, PROFILE_INCOMPLETE,
                 NO_PENDING_REVIEW, NO_CHANGES, MEMBER_CODE_UNAVAILABLE, and for photos:
                 PHOTO_NOT_FOUND, PHOTO_LIMIT_REACHED, PHOTO_NOT_APPROVED, PHOTO_INVALID,
                 PHOTO_TYPE_UNSUPPORTED, PHOTO_TOO_SMALL, PAYLOAD_TOO_LARGE,
-                UNSUPPORTED_MEDIA_TYPE, and for registration: ACCOUNT_NOT_FOUND (a login for
-                someone with no account yet), PHONE_ALREADY_REGISTERED (the number belongs to a
-                different sign-in), REGISTRATION_PHONE_REQUIRED (the provider did not verify a phone), and
+                UNSUPPORTED_MEDIA_TYPE, and for signing in and email links: INVALID_CREDENTIALS,
+                TOO_MANY_ATTEMPTS (with details.retryAfter, seconds), EMAIL_RATE_LIMITED (with
+                details.retryAfter, seconds), LINK_INVALID_OR_EXPIRED, and
                 for staff: REVIEW_NOT_FOUND, REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED,
                 REVIEW_OUT_OF_DATE, REVIEW_OWN_SUBMISSION, PROFILE_SELF_SERVICE,
                 STATUS_CHANGE_NOT_ALLOWED, AGENT_NOT_AVAILABLE.
@@ -1727,8 +1831,8 @@ components:
               description: |
                 Present on INVALID_REQUEST and PROFILE_INCOMPLETE. Each problem names a field by its
                 dotted path (for example `profile.dateOfBirth`) and a stable code the client
-                translates: required, tooLong, invalid, invalidOption, invalidDate, underAge,
-                tooOld, outOfRange, invalidPhone, invalidEmail, rangeOrder. Values are never echoed back.
+                translates: required, tooLong, tooShort, tooWeak, sameAsEmail, invalid, invalidOption,
+                invalidDate, underAge, tooOld, outOfRange, invalidPhone, invalidEmail, rangeOrder. Values are never echoed back.
               properties:
                 fields:
                   type: array

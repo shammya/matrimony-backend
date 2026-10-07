@@ -9,16 +9,16 @@ import type {
 } from '../raw/repository/registration-repository.js';
 
 /**
- * Everything the registration workflow may do, bound to one open transaction. The account, the
- * consent records and the event are written together or not at all.
+ * Everything the registration workflow may do, bound to one open transaction. The account, its
+ * password, the consent records and the event are written together or not at all.
  */
 export interface RegistrationUnit {
-  findBySubject(agencyId: string, issuer: string, subject: string): Promise<FoundAccount | null>;
-  phoneTaken(agencyId: string, phone: string): Promise<boolean>;
+  findByEmail(agencyId: string, email: string): Promise<FoundAccount | null>;
   createMember(
     agencyId: string,
-    member: { displayName: string; phone: string; issuer: string; subject: string; locale: string },
+    member: { id: string; displayName: string; email: string; locale: string },
   ): Promise<Account | null>;
+  createCredential(agencyId: string, accountId: string, hash: string): Promise<void>;
   recordConsents(
     agencyId: string,
     accountId: string,
@@ -34,11 +34,9 @@ export class RegistrationDbService {
     private readonly events: EventRepository,
   ) {}
 
-  /** The account for this identity, whatever its status. Null when there is none. */
-  find(agencyId: string, issuer: string, subject: string): Promise<FoundAccount | null> {
-    return this.db.transaction(agencyId, (tx) =>
-      this.repository.findBySubject(tx, agencyId, issuer, subject),
-    );
+  /** The account for this email, whatever its status. Null when there is none. */
+  findByEmail(agencyId: string, email: string): Promise<FoundAccount | null> {
+    return this.db.transaction(agencyId, (tx) => this.repository.findByEmail(tx, agencyId, email));
   }
 
   inTransaction<T>(agencyId: string, work: (unit: RegistrationUnit) => Promise<T>): Promise<T> {
@@ -48,10 +46,10 @@ export class RegistrationDbService {
   private unit(tx: Transaction): RegistrationUnit {
     const repo = this.repository;
     return {
-      findBySubject: (agencyId, issuer, subject) =>
-        repo.findBySubject(tx, agencyId, issuer, subject),
-      phoneTaken: (agencyId, phone) => repo.phoneTaken(tx, agencyId, phone),
+      findByEmail: (agencyId, email) => repo.findByEmail(tx, agencyId, email),
       createMember: (agencyId, member) => repo.createMember(tx, agencyId, member),
+      createCredential: (agencyId, accountId, hash) =>
+        repo.createCredential(tx, agencyId, accountId, hash),
       recordConsents: (agencyId, accountId, consents) =>
         repo.recordConsents(tx, agencyId, accountId, consents),
       appendEvent: (event) => this.events.append(tx, event),

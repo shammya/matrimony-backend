@@ -6,7 +6,15 @@ import type { ReviewDetail } from '../src/bo/review.js';
 import { buildApp } from '../src/controller/app.js';
 import type { ClientDetail } from '../src/service/client-service.js';
 import type { ProfileActor } from '../src/service/profile-service.js';
-import { account, agency, config, unusedPhotos, unusedProfiles } from './fixtures.js';
+import {
+  account,
+  agency,
+  config,
+  unusedPhotos,
+  unusedProfiles,
+  authFor,
+  unusedAccess,
+} from './fixtures.js';
 
 const redis = {
   defineCommand: () => {},
@@ -45,9 +53,6 @@ const detail: ReviewDetail = {
 
 async function setup(role: 'admin' | 'agent' | 'member' = 'agent') {
   const calls: { name: string; args: unknown[] }[] = [];
-  const unused = async () => {
-    throw new Error('unused');
-  };
   const record =
     <T>(name: string, result: T) =>
     async (_actor: ProfileActor, ...args: unknown[]) => {
@@ -99,15 +104,8 @@ async function setup(role: 'admin' | 'agent' | 'member' = 'agent') {
         publicConfig: { branches: [], successStories: [] },
       }),
     },
-    auth: {
-      authenticate: async () => ({ ...account, role, subject: 's' }),
-      begin: unused,
-      beginRegistration: unused,
-      complete: unused,
-      bootstrap: unused,
-      refresh: unused,
-      logout: async () => {},
-    },
+    auth: authFor(async () => ({ ...account, role })),
+    access: unusedAccess,
   });
   const call = (method: 'GET' | 'PUT' | 'POST' | 'DELETE', url: string, payload?: unknown) =>
     app.inject({

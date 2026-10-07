@@ -7,27 +7,39 @@ import {
   PRIVACY_VERSION,
   TERMS_VERSION,
   consentsFor,
-  registrationInputSchema,
   toRegistration,
+  registrationInputSchema,
   type ConsentRecord,
   type Registration,
 } from '../src/bo/registration.js';
 import type { FoundAccount } from '../src/db/raw/repository/registration-repository.js';
 import type { RegistrationUnit } from '../src/db/service/registration-db-service.js';
-import { AppError } from '../src/exception/app-error.js';
-import { RegistrationService, type VerifiedIdentity } from '../src/service/registration-service.js';
+import {
+  RegistrationService,
+  type VerifiedRegistration,
+} from '../src/service/registration-service.js';
 import { agency, otherAgency } from './fixtures.js';
 
-const ISSUER = 'https://issuer.example';
-const registration: Registration = { displayName: 'Rahim', locale: 'bn', onBehalfOfOther: false };
+const registration: Registration = {
+  displayName: 'Rahim',
+  locale: 'bn',
+  onBehalfOfOther: false,
+  termsVersion: 'terms-v1',
+  privacyVersion: 'privacy-v1',
+};
+const verified: VerifiedRegistration = {
+  email: 'rahim@example.com',
+  passwordHash: '$argon2id$v=19$m=64,t=1,p=1$c2FsdA$aGFzaA',
+  registration,
+};
 
 interface Row {
   agencyId: string;
   account: Account;
-  phone: string | null;
-  issuer: string;
-  subject: string;
+  email: string;
+  locale: string;
   status: FoundAccount['status'];
+  passwordHash?: string;
 }
 
 /** An in-memory stand-in for one transaction's worth of account storage. */
@@ -35,51 +47,58 @@ class FakeStore {
   rows: Row[] = [];
   consents: { accountId: string; consent: ConsentRecord }[] = [];
   events: WorkflowEvent[] = [];
-  /** Make the next insert lose a race with another request for the same identity. */
+  /** Make the next insert lose a race with another request for the same email. */
   raceOnInsert: Row | null = null;
-  inserts = 0;
+  failCredential = false;
+  transactions = 0;
 
   db = {
-    find: async (agencyId: string, issuer: string, subject: string) =>
-      this.byIdentity(agencyId, issuer, subject),
-    inTransaction: <T>(_agencyId: string, work: (unit: RegistrationUnit) => Promise<T>) =>
-      work(this.unit()),
+    findByEmail: async (agencyId: string, email: string) => this.byEmail(agencyId, email),
+    inTransaction: async <T>(_agencyId: string, work: (unit: RegistrationUnit) => Promise<T>) => {
+      this.transactions += 1;
+      // All or nothing, like a database transaction.
+      const before = {
+        rows: [...this.rows],
+        consents: [...this.consents],
+        events: [...this.events],
+      };
+      try {
+        return await work(this.unit());
+      } catch (error) {
+        Object.assign(this, before);
+        throw error;
+      }
+    },
   };
 
-  private byIdentity(agencyId: string, issuer: string, subject: string): FoundAccount | null {
-    const row = this.rows.find(
-      (r) => r.agencyId === agencyId && r.issuer === issuer && r.subject === subject,
-    );
+  private byEmail(agencyId: string, email: string): FoundAccount | null {
+    const row = this.rows.find((r) => r.agencyId === agencyId && r.email === email);
     return row ? { account: row.account, status: row.status } : null;
   }
 
-  add(agencyId: string, row: Partial<Row> & { subject: string }) {
+  add(agencyId: string, email: string, status: FoundAccount['status'] = 'active') {
     const account: Account = {
       id: randomUUID(),
       agencyId,
       role: 'member',
       displayName: 'Existing',
     };
-    const full: Row = { agencyId, account, phone: null, issuer: ISSUER, status: 'active', ...row };
-    this.rows.push(full);
-    return full;
+    const row: Row = { agencyId, account, email, locale: 'bn', status, passwordHash: 'existing' };
+    this.rows.push(row);
+    return row;
   }
 
   unit(): RegistrationUnit {
     return {
-      findBySubject: async (agencyId, issuer, subject) =>
-        this.byIdentity(agencyId, issuer, subject),
-      phoneTaken: async (agencyId, phone) =>
-        this.rows.some((r) => r.agencyId === agencyId && r.phone === phone),
+      findByEmail: async (agencyId, email) => this.byEmail(agencyId, email),
       createMember: async (agencyId, member) => {
-        this.inserts += 1;
         if (this.raceOnInsert) {
           this.rows.push(this.raceOnInsert);
           this.raceOnInsert = null;
           return null;
         }
         const account: Account = {
-          id: randomUUID(),
+          id: member.id,
           agencyId,
           role: 'member',
           displayName: member.displayName,
@@ -87,12 +106,16 @@ class FakeStore {
         this.rows.push({
           agencyId,
           account,
-          phone: member.phone,
-          issuer: member.issuer,
-          subject: member.subject,
+          email: member.email,
+          locale: member.locale,
           status: 'active',
         });
         return account;
+      },
+      createCredential: async (_agencyId, accountId, hash) => {
+        if (this.failCredential) throw new Error('database down');
+        const row = this.rows.find((r) => r.account.id === accountId)!;
+        row.passwordHash = hash;
       },
       recordConsents: async (_agencyId, accountId, consents) => {
         for (const consent of consents) this.consents.push({ accountId, consent });
@@ -104,185 +127,153 @@ class FakeStore {
   }
 }
 
-const identity = (over: Partial<VerifiedIdentity> = {}): VerifiedIdentity => ({
-  issuer: ISSUER,
-  subject: 'sms|abc',
-  phone: '+8801712345678',
-  ...over,
-});
-
 function setup() {
   const store = new FakeStore();
-  const service = new RegistrationService(store.db, () => new Date('2026-10-06T10:00:00Z'));
+  const service = new RegistrationService(store.db, () => new Date('2026-10-07T10:00:00Z'));
   return { store, service };
 }
 
-const rejects = (promise: Promise<unknown>, status: number, code: string) =>
-  assert.rejects(promise, (error: unknown) => {
-    assert.ok(error instanceof AppError, `an AppError, got ${String(error)}`);
-    assert.equal(error.status, status);
-    assert.equal(error.code, code);
-    return true;
-  });
-
-const valid = {
-  displayName: 'Rahim Uddin',
-  locale: 'bn',
-  acceptTerms: true,
-  acceptPrivacy: true,
-};
-const problems = (input: unknown) => {
-  const result = registrationInputSchema.safeParse(input);
-  return result.success ? [] : result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
-};
-
-await test('registration needs a name, a language and both agreements', () => {
-  assert.deepEqual(problems(valid), []);
-  assert.deepEqual(problems({ ...valid, displayName: '   ' }), ['displayName: required']);
-  assert.deepEqual(problems({ ...valid, displayName: 'x'.repeat(101) }), ['displayName: tooLong']);
-  assert.deepEqual(problems({ ...valid, locale: 'fr' }), ['locale: invalidOption']);
-  assert.deepEqual(problems({ ...valid, acceptTerms: false }), ['acceptTerms: required']);
-  assert.deepEqual(problems({ ...valid, acceptPrivacy: undefined }), ['acceptPrivacy: required']);
-});
-
-await test('registering for someone else needs the confirmation of authority', () => {
-  assert.deepEqual(problems({ ...valid, onBehalfOfOther: true }), ['confirmAuthority: required']);
-  assert.deepEqual(problems({ ...valid, onBehalfOfOther: true, confirmAuthority: true }), []);
-});
-
-await test('nothing can be smuggled in: no role, no phone, no extra fields', () => {
-  for (const extra of [{ role: 'admin' }, { phone: '+8801700000000' }, { agencyId: agency }]) {
-    assert.deepEqual(problems({ ...valid, ...extra }).length, 1, JSON.stringify(extra));
-  }
-});
-
-await test('the agreements are recorded with the version of the text that was shown', () => {
-  assert.deepEqual(consentsFor(registration), [
-    { purpose: 'terms', documentVersion: TERMS_VERSION },
-    { purpose: 'privacy', documentVersion: PRIVACY_VERSION },
-  ]);
-  const behalf = consentsFor({ ...registration, onBehalfOfOther: true });
-  assert.deepEqual(
-    behalf.map((c) => c.purpose),
-    ['terms', 'privacy', 'profile_representation'],
-  );
-  const parsed = registrationInputSchema.parse(valid);
-  assert.deepEqual(toRegistration(parsed), {
-    displayName: 'Rahim Uddin',
-    locale: 'bn',
-    onBehalfOfOther: false,
-  });
-});
-
-await test('registering creates a member with the verified phone, consents and an event, together', async () => {
+await test('opening the link creates one member, with a verified email and the hashed password', async () => {
   const { store, service } = setup();
-  const account = await service.register(agency, identity(), registration, 'req-1');
+  const result = await service.createVerified(agency, verified, 'req-1');
+  assert.ok(result.created);
+  assert.equal(result.account.role, 'member');
+  assert.equal(result.account.displayName, 'Rahim');
+  assert.equal(result.account.agencyId, agency);
+  assert.equal(store.rows.length, 1);
+  assert.equal(store.rows[0]!.email, 'rahim@example.com');
+  assert.equal(store.rows[0]!.locale, 'bn');
+  assert.equal(store.rows[0]!.passwordHash, verified.passwordHash);
+});
 
-  assert.equal(account.role, 'member');
-  assert.equal(account.displayName, 'Rahim');
-  assert.equal(account.agencyId, agency);
-  assert.equal(store.rows[0]?.phone, '+8801712345678');
+await test('the consents are recorded with the versions that were agreed to, not the current ones', async () => {
+  const { store, service } = setup();
+  const result = await service.createVerified(agency, verified, 'req-1');
+  assert.ok(result.created);
   assert.deepEqual(
-    store.consents.map((c) => [c.accountId, c.consent.purpose]),
+    store.consents.map((c) => c.consent),
     [
-      [account.id, 'terms'],
-      [account.id, 'privacy'],
+      { purpose: 'terms', documentVersion: 'terms-v1' },
+      { purpose: 'privacy', documentVersion: 'privacy-v1' },
     ],
   );
-  assert.equal(store.events[0]?.type, 'account.registered');
-  assert.equal(store.events[0]?.actorId, account.id);
-  assert.equal(store.events[0]?.correlationId, 'req-1');
+  assert.ok(store.consents.every((c) => c.accountId === result.account.id));
 });
 
-await test('registering for someone else also records that consent', async () => {
+await test('registering for someone else records that authority, under the terms version', async () => {
   const { store, service } = setup();
-  await service.register(agency, identity(), { ...registration, onBehalfOfOther: true }, 'c');
+  await service.createVerified(
+    agency,
+    { ...verified, registration: { ...registration, onBehalfOfOther: true } },
+    'r',
+  );
   assert.deepEqual(
-    store.consents.map((c) => c.consent.purpose),
-    ['terms', 'privacy', 'profile_representation'],
+    store.consents.map((c) => c.consent),
+    [
+      { purpose: 'terms', documentVersion: 'terms-v1' },
+      { purpose: 'privacy', documentVersion: 'privacy-v1' },
+      { purpose: 'profile_representation', documentVersion: 'terms-v1' },
+    ],
   );
 });
 
-await test('without a phone the provider verified, nothing is created', async () => {
+await test('an event records who registered, with ids only', async () => {
   const { store, service } = setup();
-  for (const phone of [undefined, '', '01712345678', '+0123', 'not a number']) {
-    await rejects(
-      service.register(agency, identity({ phone }), registration, 'c'),
-      422,
-      'REGISTRATION_PHONE_REQUIRED',
-    );
-  }
-  assert.equal(store.rows.length, 0);
+  const result = await service.createVerified(agency, verified, 'req-42');
+  assert.ok(result.created);
+  assert.deepEqual(store.events, [
+    {
+      id: store.events[0]!.id,
+      agencyId: agency,
+      actorId: result.account.id,
+      subjectId: result.account.id,
+      type: 'account.registered',
+      version: 1,
+      occurredAt: '2026-10-07T10:00:00.000Z',
+      correlationId: 'req-42',
+    },
+  ]);
+});
+
+await test('an email that already has an account never gets a second one, and its password is untouched', async () => {
+  const { store, service } = setup();
+  const existing = store.add(agency, 'rahim@example.com');
+  assert.deepEqual(await service.createVerified(agency, verified, 'r'), { created: false });
+  assert.equal(store.rows.length, 1);
+  assert.equal(existing.passwordHash, 'existing');
+  assert.equal(store.consents.length, 0);
   assert.equal(store.events.length, 0);
 });
 
-await test('registering again with the same identity is a login: no second account, nothing re-recorded', async () => {
-  const { store, service } = setup();
-  const first = await service.register(agency, identity(), registration, 'c');
-  const again = await service.register(agency, identity(), registration, 'c2');
-  assert.equal(again.id, first.id);
-  assert.equal(store.rows.length, 1);
-  assert.equal(store.consents.length, 2);
-  assert.equal(store.events.length, 1);
-});
-
-await test('a phone number that belongs to a different identity is refused, not linked', async () => {
-  const { store, service } = setup();
-  store.add(agency, { subject: 'auth0|staff', phone: '+8801712345678' });
-  await rejects(
-    service.register(agency, identity({ subject: 'sms|new' }), registration, 'c'),
-    409,
-    'PHONE_ALREADY_REGISTERED',
-  );
-  assert.equal(store.rows.length, 1);
-  assert.equal(store.consents.length, 0);
-});
-
-await test('an existing account that cannot log in is never registered over', async () => {
-  const { store, service } = setup();
+await test('an account in any status blocks the email, so a disabled member cannot be replaced', async () => {
   for (const status of ['invited', 'disabled'] as const) {
-    store.rows = [];
-    store.add(agency, { subject: 'sms|abc', status, phone: '+8801712345678' });
-    await rejects(
-      service.register(agency, identity(), registration, 'c'),
-      403,
-      'ACCOUNT_NOT_ACTIVE',
-    );
+    const { store, service } = setup();
+    store.add(agency, 'rahim@example.com', status);
+    assert.deepEqual(await service.createVerified(agency, verified, 'r'), { created: false });
+    assert.equal(store.rows.length, 1);
   }
 });
 
-await test('two requests at once for one person end with one account', async () => {
+await test('the same email at another agency is a different person', async () => {
   const { store, service } = setup();
-  const winner = store.add(agency, { subject: 'sms|abc', phone: '+8801712345678' });
-  // Both passed the first checks; this one loses the insert.
-  store.raceOnInsert = null;
-  const original = store.unit.bind(store);
-  let first = true;
-  store.unit = () => {
-    const unit = original();
-    const find = unit.findBySubject;
-    unit.findBySubject = async (...args) => {
-      // The first look finds nothing (the winner has not committed yet).
-      if (first) {
-        first = false;
-        return null;
-      }
-      return find(...args);
-    };
-    unit.phoneTaken = async () => false;
-    unit.createMember = async () => null;
-    return unit;
-  };
-  const account = await service.register(agency, identity(), registration, 'c');
-  assert.equal(account.id, winner.account.id);
-  assert.equal(store.rows.length, 1);
-  assert.equal(store.consents.length, 0, 'the winner recorded its own');
+  store.add(otherAgency, 'rahim@example.com');
+  const result = await service.createVerified(agency, verified, 'r');
+  assert.ok(result.created);
+  assert.equal(store.rows.length, 2);
 });
 
-await test('the same phone can have a separate account at another agency', async () => {
+await test('losing a race to another request for the same email adds nothing', async () => {
   const { store, service } = setup();
-  await service.register(agency, identity(), registration, 'c');
-  const other = await service.register(otherAgency, identity(), registration, 'c');
-  assert.equal(other.agencyId, otherAgency);
-  assert.equal(store.rows.length, 2);
+  store.raceOnInsert = {
+    agencyId: agency,
+    account: { id: randomUUID(), agencyId: agency, role: 'member', displayName: 'Winner' },
+    email: 'rahim@example.com',
+    locale: 'bn',
+    status: 'active',
+    passwordHash: 'winner',
+  };
+  assert.deepEqual(await service.createVerified(agency, verified, 'r'), { created: false });
+  assert.equal(store.rows.length, 1);
+  assert.equal(store.rows[0]!.passwordHash, 'winner');
+  assert.equal(store.consents.length, 0);
+  assert.equal(store.events.length, 0);
+});
+
+await test('if any part fails, nothing is left behind', async () => {
+  const { store, service } = setup();
+  store.failCredential = true;
+  await assert.rejects(() => service.createVerified(agency, verified, 'r'), /database down/);
+  assert.equal(store.rows.length, 0);
+  assert.equal(store.consents.length, 0);
+  assert.equal(store.events.length, 0);
+});
+
+await test('whether an email is registered says yes for any status and no for none', async () => {
+  const { store, service } = setup();
+  assert.equal(await service.emailRegistered(agency, 'rahim@example.com'), false);
+  store.add(agency, 'rahim@example.com', 'disabled');
+  assert.equal(await service.emailRegistered(agency, 'rahim@example.com'), true);
+  assert.equal(await service.emailRegistered(otherAgency, 'rahim@example.com'), false);
+});
+
+await test('what is kept for the link records the document versions in force at registration', () => {
+  const input = registrationInputSchema.parse({
+    email: 'a@b.com',
+    password: 'a long enough password',
+    displayName: 'A',
+    locale: 'en',
+    acceptTerms: true,
+    acceptPrivacy: true,
+  });
+  assert.deepEqual(toRegistration(input), {
+    displayName: 'A',
+    locale: 'en',
+    onBehalfOfOther: false,
+    termsVersion: TERMS_VERSION,
+    privacyVersion: PRIVACY_VERSION,
+  });
+  assert.deepEqual(consentsFor(toRegistration(input)), [
+    { purpose: 'terms', documentVersion: TERMS_VERSION },
+    { purpose: 'privacy', documentVersion: PRIVACY_VERSION },
+  ]);
 });

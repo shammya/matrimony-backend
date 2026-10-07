@@ -8,9 +8,7 @@ export class IdentityDbService {
   tenant(agencyId: string) {
     return this.db.transaction(agencyId, (tx) => this.repository.tenant(tx, agencyId));
   }
-  account(agencyId: string, issuer: string, subject: string) {
-    return this.db.transaction(agencyId, (tx) =>
-      this.repository.account(tx, agencyId, issuer, subject),
-    );
+  account(agencyId: string, accountId: string) {
+    return this.db.transaction(agencyId, (tx) => this.repository.account(tx, agencyId, accountId));
   }
 }

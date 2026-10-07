@@ -1,169 +1,123 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { z } from 'zod';
-import type { IdentityProvider } from '../security/oidc-provider.js';
-import type { JwtVerifier } from '../security/jwt-verifier.js';
-import { SecretBox, digest } from '../security/secret-box.js';
-import type { SessionRepository, Session } from '../cache/repository/session-repository.js';
+import type { AccessTokens } from '../security/access-token.js';
+import { digest } from '../security/secret-box.js';
+import type { Session, SessionRepository } from '../cache/repository/session-repository.js';
+import type { ThrottleRepository } from '../cache/repository/throttle-repository.js';
+import type { CredentialService } from '../service/credential-service.js';
 import type { IdentityService } from '../service/identity-service.js';
-import type { RegistrationService } from '../service/registration-service.js';
-import { registrationSchema, type Registration } from '../bo/registration.js';
 import type { EventDbService } from '../db/service/event-db-service.js';
 import type { WorkflowEvent } from '../bo/event.js';
+import type { LoginInput } from '../bo/credentials.js';
 import { AppError } from '../exception/app-error.js';
-import type { Logger } from 'pino';
-const challengeSchema = z.object({
-  agencyId: z.uuid(),
-  state: z.string(),
-  nonce: z.string(),
-  verifier: z.string(),
-  redirectUri: z.string().url(),
-  // Sealed with the rest, so a browser cannot change what it agreed to or what it is registering as.
-  intent: z.enum(['login', 'register']).default('login'),
-  registration: registrationSchema.optional(),
-});
+
+/** Wrong passwords allowed for one email before sign-in pauses, and how long it pauses. */
+const MAX_FAILED_LOGINS = 5;
+const LOCKOUT_SECONDS = 900;
+
+export interface SessionOptions {
+  /** How long a session lasts in total, however often it is refreshed. */
+  sessionTtl: number;
+  /** How long one access token lasts. */
+  accessTtl: number;
+  /** Sessions kept per account; the oldest are ended beyond this. */
+  maxSessions: number;
+}
+
 const secret = () => randomBytes(32).toString('base64url');
+
+/**
+ * Sign-in and the browser session behind it.
+ *
+ * A session is a random id kept in an HttpOnly cookie, with its state in Redis. Each short-lived
+ * access token is tied to that session by its hash, so ending the session (sign-out, password
+ * reset, a disabled account) cuts off its tokens at once. The session ends at its absolute expiry
+ * however often it is refreshed.
+ */
 export class AuthProcess {
   constructor(
-    private readonly provider: IdentityProvider,
-    private readonly verifier: Pick<JwtVerifier, 'verify'>,
+    private readonly credentials: Pick<CredentialService, 'verify'>,
+    private readonly accessTokens: Pick<AccessTokens, 'issue' | 'verify'>,
     private readonly sessions: Pick<
       SessionRepository,
-      | 'put'
-      | 'get'
-      | 'forAccess'
-      | 'remove'
-      | 'claim'
-      | 'finalize'
-      | 'putChallenge'
-      | 'takeChallenge'
+      'put' | 'get' | 'forAccess' | 'remove' | 'claim' | 'finalize' | 'limit'
     >,
     private readonly identities: Pick<IdentityService, 'account'>,
-    private readonly registrations: Pick<RegistrationService, 'find' | 'register'>,
+    private readonly throttle: Pick<ThrottleRepository, 'peek' | 'hit' | 'clear'>,
     private readonly events: Pick<EventDbService, 'record'>,
-    private readonly box: SecretBox,
-    private readonly ttl: number,
-    private readonly logger: Logger,
+    private readonly options: SessionOptions,
   ) {}
-  async begin(agencyId: string, redirectUri: string) {
-    return this.start(agencyId, redirectUri, 'login');
-  }
+
   /**
-   * Starts a registration. What the person agreed to travels sealed with the login attempt, and
-   * is acted on only if the provider then verifies their phone: no account without consent, and
-   * no consent without an account.
+   * Checks an email and password and starts a session. After five wrong passwords for the same
+   * email, sign-in pauses for 15 minutes (even for the right password), which stops guessing.
+   * The count follows the email, not the visitor, so the pause is the same for an email that
+   * has no account.
    */
-  async beginRegistration(agencyId: string, redirectUri: string, registration: Registration) {
-    return this.start(agencyId, redirectUri, 'register', registration);
-  }
-  private async start(
-    agencyId: string,
-    redirectUri: string,
-    intent: 'login' | 'register',
-    registration?: Registration,
-  ) {
-    const id = secret();
-    const challenge = {
-      agencyId,
-      redirectUri,
-      intent,
-      state: secret(),
-      nonce: secret(),
-      verifier: secret(),
-    };
-    await this.sessions.putChallenge(
-      digest(id),
-      this.box.seal(JSON.stringify({ ...challenge, registration }), digest(id)),
-    );
-    return { challengeId: id, authorizationUrl: await this.provider.authorize(challenge) };
-  }
-  async complete(agencyId: string, challengeId: string, url: URL, correlationId: string) {
-    const raw = await this.sessions.takeChallenge(digest(challengeId));
-    if (!raw) throw new AppError(401, 'OAUTH_CHALLENGE_EXPIRED');
-    const challenge = challengeSchema.parse(JSON.parse(this.box.open(raw, digest(challengeId))));
-    if (
-      challenge.agencyId !== agencyId ||
-      new URL(challenge.redirectUri).origin !== url.origin ||
-      new URL(challenge.redirectUri).pathname !== url.pathname
-    )
-      throw new AppError(401, 'OAUTH_CONTEXT_MISMATCH');
-    const tokens = await this.provider.exchange(url, challenge);
-    const identity = await this.verifier.verify(tokens.accessToken);
-    if (!tokens.subject || tokens.subject !== identity.subject)
-      throw new AppError(401, 'OAUTH_SUBJECT_MISMATCH');
-    const found = await this.registrations.find(agencyId, identity.issuer, identity.subject);
+  async login(agencyId: string, input: LoginInput, correlationId: string) {
+    const counter = `login:${agencyId}:${digest(input.email)}`;
+    const attempts = await this.throttle.peek(counter);
+    if (attempts.count >= MAX_FAILED_LOGINS)
+      throw new AppError(429, 'TOO_MANY_ATTEMPTS', { retryAfter: attempts.retryAfter });
+
     let account;
-    if (found) {
-      // An account that exists but cannot log in (invited, disabled) is never "registered" again.
-      if (found.status !== 'active') throw new AppError(403, 'ACCOUNT_NOT_ACTIVE');
-      // Registering again with the same identity is simply a login.
-      account = found.account;
-    } else if (challenge.intent === 'register' && challenge.registration) {
-      if (!tokens.phone) {
-        // Only the names of the claims are logged, never their values, so a missing or
-        // differently named phone claim can be diagnosed without exposing anyone's data.
-        this.logger.warn(
-          { code: 'REGISTRATION_PHONE_MISSING', claimNames: tokens.claimNames ?? [] },
-          'The identity provider did not return a verified phone number',
-        );
-      }
-      account = await this.registrations.register(
-        agencyId,
-        { issuer: identity.issuer, subject: identity.subject, phone: tokens.phone },
-        challenge.registration,
-        correlationId,
-      );
-    } else {
-      // Logging in never creates an account.
-      throw new AppError(403, 'ACCOUNT_NOT_FOUND');
+    try {
+      account = await this.credentials.verify(agencyId, input.email, input.password);
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'INVALID_CREDENTIALS')
+        await this.throttle.hit(counter, LOCKOUT_SECONDS);
+      throw error;
     }
+    await this.throttle.clear(counter);
+
+    // A new id for every sign-in, so nothing a visitor held before signing in carries over.
     const id = secret();
     const key = digest(id);
+    const token = await this.accessTokens.issue(account.id, this.options.accessTtl);
     const session: Session = {
       agencyId,
       accountId: account.id,
-      subject: identity.subject,
-      issuer: identity.issuer,
-      accessHash: digest(tokens.accessToken),
-      refreshSecret: this.box.seal(tokens.refreshToken, key),
+      accessHash: digest(token.token),
       csrf: secret(),
-      expiresAt: Math.floor(Date.now() / 1000) + this.ttl,
+      expiresAt: Math.floor(Date.now() / 1000) + this.options.sessionTtl,
     };
     await this.audit('auth.login', session, correlationId);
-    await this.sessions.put(key, session, this.remaining(identity.expiresAt));
+    await this.sessions.put(key, session, this.remaining(token.expiresAt));
+    await this.sessions.limit(account.id, this.options.maxSessions);
     return {
       sessionId: id,
-      accessToken: tokens.accessToken,
+      accessToken: token.token,
       csrfToken: session.csrf,
-      expiresIn: this.remaining(identity.expiresAt),
+      expiresIn: this.remaining(token.expiresAt),
     };
   }
+
   async authenticate(agencyId: string, token: string) {
-    const identity = await this.verifier.verify(token);
+    const { accountId } = await this.accessTokens.verify(token);
     const session = await this.sessions.forAccess(digest(token));
     if (
       !session ||
       session.agencyId !== agencyId ||
-      session.subject !== identity.subject ||
-      session.issuer !== identity.issuer ||
+      session.accountId !== accountId ||
       session.expiresAt <= Date.now() / 1000
     )
       throw new AppError(401, 'SESSION_INVALID');
-    const account = await this.identities.account(agencyId, identity.issuer, identity.subject);
-    if (account.id !== session.accountId) throw new AppError(401, 'SESSION_INVALID');
-    return { ...account, subject: identity.subject };
+    // Read fresh on every request: a disabled account or a changed role applies immediately.
+    return this.identities.account(agencyId, accountId);
   }
+
   /**
    * Starts or restores a browser session from its cookie alone. The browser has no CSRF
-   * token right after login or after a reload, and the server never stores the login's
-   * own access token (only its hash), so this rotates the session through the provider
-   * exactly like refresh, using the CSRF token the session already holds. The caller
-   * must have checked the same-origin rule; the cookie is HttpOnly and host-only.
+   * token right after a reload, and the server never stores an access token (only its hash),
+   * so this issues a new access token for the session, using the CSRF token the session
+   * already holds. The caller must have checked the same-origin rule; the cookie is HttpOnly
+   * and host-only.
    */
   async bootstrap(agencyId: string, id: string, correlationId: string) {
     const session = await this.sessions.get(digest(id));
     if (!session || session.agencyId !== agencyId) throw new AppError(401, 'SESSION_INVALID');
     return this.refresh(agencyId, id, session.csrf, correlationId);
   }
+
   async refresh(agencyId: string, id: string, csrf: string, correlationId: string) {
     const key = digest(id);
     const claim = secret();
@@ -171,32 +125,24 @@ export class AuthProcess {
     if (!session) throw new AppError(409, 'REFRESH_UNAVAILABLE');
     try {
       if (session.expiresAt <= Date.now() / 1000) throw new AppError(401, 'SESSION_EXPIRED');
-      await this.identities.account(agencyId, session.issuer, session.subject);
-      const tokens = await this.provider.refresh(this.box.open(session.refreshSecret, key));
-      const identity = await this.verifier.verify(tokens.accessToken);
-      if (identity.subject !== session.subject || identity.issuer !== session.issuer)
-        throw new AppError(401, 'OAUTH_SUBJECT_MISMATCH');
-      const next: Session = {
-        ...session,
-        refreshSecret: this.box.seal(tokens.refreshToken, key),
-        accessHash: digest(tokens.accessToken),
-      };
+      await this.identities.account(agencyId, session.accountId);
+      const token = await this.accessTokens.issue(session.accountId, this.options.accessTtl);
+      const next: Session = { ...session, accessHash: digest(token.token) };
       delete next.claim;
       await this.audit('auth.refresh', next, correlationId);
-      if (!(await this.sessions.finalize(key, claim, next, this.remaining(identity.expiresAt)))) {
-        await this.revokeSafely(tokens.refreshToken);
+      if (!(await this.sessions.finalize(key, claim, next, this.remaining(token.expiresAt))))
         throw new AppError(401, 'SESSION_INVALID');
-      }
       return {
-        accessToken: tokens.accessToken,
+        accessToken: token.token,
         csrfToken: next.csrf,
-        expiresIn: this.remaining(identity.expiresAt),
+        expiresIn: this.remaining(token.expiresAt),
       };
     } catch (error) {
       await this.sessions.remove(key);
       throw error;
     }
   }
+
   async logout(agencyId: string, id: string, csrf: string, correlationId: string) {
     const key = digest(id);
     const session = await this.sessions.get(key);
@@ -204,13 +150,14 @@ export class AuthProcess {
     if (session.agencyId !== agencyId || session.csrf !== csrf)
       throw new AppError(403, 'CSRF_INVALID');
     await this.sessions.remove(key);
-    // Local logout stays effective even if auditing or provider revocation fails.
-    await this.revokeSafely(this.box.open(session.refreshSecret, key));
+    // Local logout stays effective even if auditing fails.
     await this.audit('auth.logout', session, correlationId);
   }
+
   private remaining(expiresAt: number) {
     return Math.max(1, Math.floor(expiresAt - Date.now() / 1000));
   }
+
   private audit(type: WorkflowEvent['type'], session: Session, correlationId: string) {
     return this.events.record({
       id: randomUUID(),
@@ -222,15 +169,5 @@ export class AuthProcess {
       occurredAt: new Date().toISOString(),
       correlationId,
     });
-  }
-  private async revokeSafely(token: string) {
-    try {
-      await this.provider.revoke(token);
-    } catch {
-      this.logger.error(
-        { code: 'OIDC_REVOCATION_FAILED' },
-        'Provider revocation failed; local session remains invalid',
-      );
-    }
   }
 }

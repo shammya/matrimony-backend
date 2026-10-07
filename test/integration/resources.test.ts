@@ -132,9 +132,6 @@ await test('real PostgreSQL, Redis and MongoDB infrastructure', async (t) => {
       const value: Session = {
         agencyId: agency,
         accountId: randomUUID(),
-        subject: 'test',
-        issuer: 'https://issuer',
-        refreshSecret: 'encrypted',
         accessHash: randomUUID(),
         csrf: 'csrf',
         expiresAt: Date.now() / 1000 + 60,
