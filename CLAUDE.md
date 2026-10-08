@@ -1,6 +1,7 @@
 # Claude project instructions
 
 @AGENTS.md
+@PROJECT.md
 
 `AGENTS.md` is the shared source of project workflow, architecture, security, testing and developer-learning guidance. Read it before planning or editing; if automatic import is unavailable, open the file directly. Do not maintain a separate copy of those rules here.
 
