@@ -203,3 +203,42 @@ export function passwordChangedEmail(context: Context & { resetLink: string }): 
         ].join('\n'),
       };
 }
+
+/** An admin's invitation to work as staff, sent to the invited address. The days match INVITATION_DAYS. */
+export function staffInvitationEmail(
+  context: Context & {
+    name: string;
+    role: 'admin' | 'agent';
+    invitedBy: string;
+    link: string;
+  },
+): MailMessage {
+  const { to, locale, agencyName, name, role, invitedBy, link } = context;
+  return locale === 'bn'
+    ? {
+        to,
+        subject: `${agencyName}: আপনাকে আমন্ত্রণ জানানো হয়েছে`,
+        text: [
+          `প্রিয় ${name},`,
+          '',
+          `${invitedBy} আপনাকে ${agencyName}-এ ${role === 'admin' ? 'অ্যাডমিন' : 'এজেন্ট'} হিসেবে কাজ করার জন্য আমন্ত্রণ জানিয়েছেন। পাসওয়ার্ড ঠিক করে অ্যাকাউন্ট চালু করতে নিচের লিংকটি খুলুন। লিংকটি ৭ দিন কাজ করবে এবং একবারই ব্যবহার করা যাবে।`,
+          '',
+          link,
+          '',
+          'আপনি এটি আশা না করে থাকলে এই ইমেইলটি উপেক্ষা করুন। কোনো অ্যাকাউন্ট তৈরি হবে না।',
+        ].join('\n'),
+      }
+    : {
+        to,
+        subject: `${agencyName}: you have been invited`,
+        text: [
+          `Dear ${name},`,
+          '',
+          `${invitedBy} has invited you to work at ${agencyName} as ${role === 'admin' ? 'an admin' : 'an agent'}. Open the link below to choose a password and start your account. It works for 7 days and only once.`,
+          '',
+          link,
+          '',
+          'If you did not expect this, ignore this email. No account will be created.',
+        ].join('\n'),
+      };
+}

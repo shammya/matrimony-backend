@@ -68,6 +68,16 @@ export const unusedClients = {
   listStaff: unused,
 };
 
+/** The staff invitation process for tests about other routes. */
+export const unusedInvitations = {
+  invite: unused,
+  resend: unused,
+  list: unused,
+  revoke: unused,
+  preview: unused,
+  accept: unused,
+};
+
 /** The auth and access processes for tests about other routes: only the given bearer token works. */
 export const unusedAccess = {
   startRegistration: unused,

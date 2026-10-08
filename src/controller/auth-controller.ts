@@ -3,6 +3,8 @@ import type { AuthProcess } from '../process/auth-process.js';
 import type { AccountAccessProcess } from '../process/account-access-process.js';
 import { GoogleSignInError, type GoogleAuthProcess } from '../process/google-auth-process.js';
 import type { PhoneAuthProcess } from '../process/phone-auth-process.js';
+import type { StaffInvitationProcess } from '../process/staff-invitation-process.js';
+import { acceptInvitationInputSchema, invitationLinkInputSchema } from '../bo/staff.js';
 import type { RegistrationService } from '../service/registration-service.js';
 import {
   maskPhone,
@@ -74,6 +76,7 @@ export function registerAuthController(
     | 'confirmAddEmail'
     | 'changePassword'
   >,
+  invitations: Pick<StaffInvitationProcess, 'preview' | 'accept'>,
   config: AppConfig,
 ) {
   const prefix = config.NODE_ENV === 'production' ? '__Host-' : '';
@@ -151,6 +154,43 @@ export function registerAuthController(
       requireSameOrigin(req);
       const { token } = verifyEmailInputSchema.parse(req.body);
       const result = await access.verifyEmail(req.tenant!.id, token, req.id);
+      reply.setCookie(sessionCookie, result.sessionId, {
+        ...cookieOptions,
+        maxAge: config.SESSION_TTL_SECONDS,
+      });
+      return {
+        accessToken: result.accessToken,
+        csrfToken: result.csrfToken,
+        expiresIn: result.expiresIn,
+      };
+    },
+  );
+  // What an invitation link is for, so the page can greet the person. Public like the other
+  // emailed links; it does not use the link up.
+  app.post(
+    '/api/v1/auth/staff-invitation/preview',
+    { config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } } },
+    async (req) => {
+      requireSameOrigin(req);
+      const { token } = invitationLinkInputSchema.parse(req.body);
+      return invitations.preview(req.tenant!.id, token);
+    },
+  );
+  // Accepting an invitation creates the staff account, with the role the admin chose, and signs
+  // the person in like any other sign-in.
+  app.post(
+    '/api/v1/auth/staff-invitation/accept',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: tokensResponseSchema } },
+    },
+    async (req, reply) => {
+      requireSameOrigin(req);
+      const result = await invitations.accept(
+        req.tenant!.id,
+        acceptInvitationInputSchema.parse(req.body),
+        req.id,
+      );
       reply.setCookie(sessionCookie, result.sessionId, {
         ...cookieOptions,
         maxAge: config.SESSION_TTL_SECONDS,

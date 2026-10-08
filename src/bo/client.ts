@@ -83,6 +83,7 @@ export interface ClientPage {
 }
 
 export interface StaffMember extends StaffRef {
+  email: string | null;
   role: 'admin' | 'agent';
   status: 'invited' | 'active' | 'disabled';
 }

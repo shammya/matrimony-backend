@@ -49,7 +49,7 @@ function setup() {
   ) => {
     const id = randomUUID();
     names.set(id, name);
-    staff.push({ id, displayName: name, role, status });
+    staff.push({ id, displayName: name, email: null, role, status });
     return id;
   };
   const admin = person('Admin', 'admin');

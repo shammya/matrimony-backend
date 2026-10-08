@@ -11,6 +11,7 @@ import type { AuthProcess } from '../process/auth-process.js';
 import type { AccountAccessProcess } from '../process/account-access-process.js';
 import type { GoogleAuthProcess } from '../process/google-auth-process.js';
 import type { PhoneAuthProcess } from '../process/phone-auth-process.js';
+import type { StaffInvitationProcess } from '../process/staff-invitation-process.js';
 import type { RegistrationService } from '../service/registration-service.js';
 import type { IdentityService } from '../service/identity-service.js';
 import { bearerSchema, selfResponseSchema } from '../io/http/contracts.js';
@@ -21,6 +22,7 @@ import { registerProfileController } from './profile-controller.js';
 import { registerPhotoController } from './photo-controller.js';
 import { registerReviewController } from './review-controller.js';
 import { registerClientController } from './client-controller.js';
+import { registerStaffController } from './staff-controller.js';
 import type { ReviewProcess } from '../process/review-process.js';
 import type { ClientService } from '../service/client-service.js';
 import type { PhotoProcess } from '../process/photo-process.js';
@@ -67,6 +69,10 @@ export interface AppDependencies {
     | 'startAddEmail'
     | 'confirmAddEmail'
     | 'changePassword'
+  >;
+  invitations: Pick<
+    StaffInvitationProcess,
+    'invite' | 'resend' | 'list' | 'revoke' | 'preview' | 'accept'
   >;
   identities: Pick<IdentityService, 'tenant'>;
   photos: Pick<PhotoProcess, 'list' | 'upload' | 'remove' | 'makePrimary' | 'image'>;
@@ -192,11 +198,13 @@ export async function buildApp(deps: AppDependencies) {
     deps.phone,
     deps.registrations,
     deps.access,
+    deps.invitations,
     config,
   );
   registerProfileController(app, deps.profiles);
   registerPhotoController(app, deps.photos);
   registerReviewController(app, deps.reviews);
   registerClientController(app, deps.clients);
+  registerStaffController(app, deps.invitations);
   return app;
 }

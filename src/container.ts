@@ -18,6 +18,10 @@ import { CredentialRepository } from './db/raw/repository/credential-repository.
 import { CredentialDbService } from './db/service/credential-db-service.js';
 import { CredentialService } from './service/credential-service.js';
 import { AccountAccessProcess } from './process/account-access-process.js';
+import { StaffInvitationProcess } from './process/staff-invitation-process.js';
+import { StaffInvitationService } from './service/staff-invitation-service.js';
+import { StaffInvitationDbService } from './db/service/staff-invitation-db-service.js';
+import { StaffInvitationRepository } from './db/raw/repository/staff-invitation-repository.js';
 import { GoogleAuthProcess } from './process/google-auth-process.js';
 import { GoogleProvider } from './security/google-provider.js';
 import { PhoneAuthProcess } from './process/phone-auth-process.js';
@@ -123,6 +127,22 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
             config.SMS_ALLOWED_COUNTRIES,
           )
         : undefined;
+    const mailer = createMailer(config);
+    const invitations = new StaffInvitationProcess(
+      new StaffInvitationService(
+        new StaffInvitationDbService(
+          db,
+          new StaffInvitationRepository(),
+          new RegistrationRepository(),
+          new EventRepository(),
+        ),
+      ),
+      credentials,
+      auth,
+      throttle,
+      mailer,
+      logger,
+    );
     const access = new AccountAccessProcess(
       registrations,
       credentials,
@@ -130,7 +150,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       throttle,
       sessions,
       auth,
-      createMailer(config),
+      mailer,
       box,
       logger,
       phone,
@@ -160,6 +180,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       identities,
       auth,
       access,
+      invitations,
       google,
       phone,
       registrations,
@@ -191,6 +212,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       },
       close: async () => {
         await access.idle();
+        await invitations.idle();
         await phone?.idle();
         redis.disconnect();
         await db.close();

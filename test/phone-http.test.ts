@@ -12,6 +12,7 @@ import {
   config,
   unusedAccess,
   unusedClients,
+  unusedInvitations,
   unusedPhotos,
   unusedProfiles,
   unusedReviews,
@@ -69,6 +70,7 @@ async function build(
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    invitations: unusedInvitations,
     registrations: {
       signInMethods: (async () =>
         options.methods === undefined

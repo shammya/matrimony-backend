@@ -9,6 +9,7 @@ import {
   agency,
   config,
   unusedClients,
+  unusedInvitations,
   unusedPhotos,
   unusedProfiles,
   unusedReviews,
@@ -86,6 +87,7 @@ async function build(
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    invitations: unusedInvitations,
     registrations: { signInMethods: async () => null },
     identities: {
       tenant: async (host) => {

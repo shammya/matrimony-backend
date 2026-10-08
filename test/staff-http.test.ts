@@ -13,6 +13,7 @@ import {
   unusedPhotos,
   unusedProfiles,
   authFor,
+  unusedInvitations,
   unusedAccess,
 } from './fixtures.js';
 
@@ -107,6 +108,7 @@ async function setup(role: 'admin' | 'agent' | 'member' = 'agent') {
     },
     auth: authFor(async () => ({ ...account, role })),
     access: unusedAccess,
+    invitations: unusedInvitations,
   });
   const call = (method: 'GET' | 'PUT' | 'POST' | 'DELETE', url: string, payload?: unknown) =>
     app.inject({

@@ -13,6 +13,7 @@ import {
   unusedPhotos,
   unusedReviews,
   unusedClients,
+  unusedInvitations,
   unusedProfiles,
 } from './fixtures.js';
 await test('HTTP routes default to JWT protection, enforce roles, and expose safe responses', async (t) => {
@@ -32,6 +33,7 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    invitations: unusedInvitations,
     registrations: { signInMethods: async () => null },
     identities: {
       tenant: async (host) => {

@@ -40,6 +40,7 @@ export const staffListResponse = (staff: StaffMember[]) => ({
   staff: staff.map((s) => ({
     id: s.id,
     displayName: s.displayName,
+    email: s.email,
     role: s.role,
     status: s.status,
   })),

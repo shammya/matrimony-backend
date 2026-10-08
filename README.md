@@ -174,4 +174,6 @@ Rules, enforced in the services (`review-service.ts`, `client-service.ts`, `prof
 - **Migration 006** changes the version trigger so that changing only `assigned_agent_id` does not bump the profile version (which would make waiting requests stale); any other update still does.
 - **Paging** uses a cursor built from a microsecond `position` string, because JavaScript dates lose microseconds and the last row would otherwise repeat.
 
-Not built yet: client photos and inviting staff.
+Staff are invited from the Staff page: `GET/POST /api/v1/admin/staff/invitations`, `POST /api/v1/admin/staff/invitations/:id/resend`, `DELETE /api/v1/admin/staff/invitations/:id` (admins only), and the invited person uses the public `POST /api/v1/auth/staff-invitation/preview` and `/accept` (see [authentication](docs/design/authentication.md)).
+
+Not built yet: client photos, disabling or removing staff, changing a staff member's role.

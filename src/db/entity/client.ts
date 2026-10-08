@@ -26,6 +26,7 @@ export const clientMetaRow = z.object({
 export const staffRow = z.object({
   id: z.uuid(),
   display_name: z.string(),
+  email: z.string().nullable(),
   role: z.enum(['admin', 'agent']),
   status: z.enum(['invited', 'active', 'disabled']),
 });

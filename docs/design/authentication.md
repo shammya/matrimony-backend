@@ -118,6 +118,17 @@ Added 8 October 2026, after a text message on every login proved too costly and 
 - **Forgot the password.** The code login still works (it is how a number is proved), and a signed-in member with a verified phone can choose a new password with a code to that phone (`POST /me/password`). It uses the same proof as adding an email (a code in its own scope, so a sign-in code does not count and a stolen session alone is not enough), ends every session, and tells the owner by email when there is one. This is how a phone-only member without an email recovers.
 - **Account without a password** (a Google member): the email link sets one; once it exists, the number and password work if a number was added.
 
+## Inviting staff
+
+Staff (agents and admins) are not created by registering. An **admin invites** a person by email from the Staff page; migration 011 adds `staff_invitations`.
+
+- **Admin only**, as an agent or as another admin. Each invitation is a row (name, email, role, language, who invited, expiry). Only a **hash** of the link's secret is stored, tied to the agency, so a copy of the table cannot accept an invitation. The link works **once, for 7 days**, and only at the agency that sent it.
+- **One open invitation per address.** Inviting the same address again (or "send again") replaces it: a new link, the old one stops, a fresh expiry. Cancelling keeps the row (`revoked_at`); the application role cannot delete one.
+- **An address that already has an account is never invited** (`EMAIL_IN_USE`): a member is not turned into staff and no existing account's role is ever changed. The same holds if the address registers after the invitation was sent: accepting then fails like a used link.
+- **Accepting** is a public, same-origin call from the emailed page: a preview (does not use the link up) and the accept itself, which creates the account **with the role the admin chose** (the request cannot name a role, an agency or an address), verified and active, with the password the person chose (10+ characters, not their email), and signs them in like any other sign-in. It is one transaction that locks the invitation, so two requests with the same link create one account.
+- **Abuse limits:** 30 invitations an hour per admin, 3 invitation emails an hour per address, 3 resends an hour per invitation, and the usual per-address route limits.
+- **Not built:** disabling or removing a staff member, changing a role, and an admin changing their own role. Until then a leaver is disabled directly in the database. The first admin of an agency is still created with `scripts/provision-account.sql`.
+
 ## What it protects against
 
 | Threat                                                    | Control                                                                                                                                                                                                 | Evidence                                                                          |
@@ -157,7 +168,7 @@ These are my defaults, not requirements from the client.
 - **A real SMS gateway.** Phone codes work with the development console sender. A gateway that reaches Bangladeshi numbers reliably, with its price and sender-name rules checked, plugs into `SmsSender`; the first real send is the live check. Phone-only members created before phone sign-in (by the old Auth0 flow) have no verified number, so they cannot sign in by phone until they add it, and have no email or password until one is set with `npm run auth:set-password`.
 - **Changing an existing email, and changing a password while signed in.** (Adding an email to a phone-only account is built; see above.) Changing a number still needs only the signed-in session plus a code on the new number; asking the password or a code on the old number first is a decision for the reviewer.
 - **Email delivery service.** The SMTP adapter works with any provider but has only been tested against a local SMTP server. Choose a provider, verify the sender domain (SPF, DKIM, DMARC) and send a real test.
-- Change password while signed in, a list of devices with remote sign-out, staff invitation by email, multi-factor authentication, a breached-password check, a different sender per agency.
+- Change password while signed in, a list of devices with remote sign-out, disabling or removing staff and changing their role, multi-factor authentication, a breached-password check, a different sender per agency.
 - `test/integration/resources.test.ts` (MongoDB) was not run during this change.
 
 ## Operating it

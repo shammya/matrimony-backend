@@ -12,6 +12,7 @@ import {
   agency,
   config,
   unusedClients,
+  unusedInvitations,
   unusedProfiles,
   unusedReviews,
   authFor,
@@ -50,6 +51,7 @@ async function setup(role: 'member' | 'agent' = 'member') {
     profiles: unusedProfiles,
     reviews: unusedReviews,
     clients: unusedClients,
+    invitations: unusedInvitations,
     photos: {
       list: record('list'),
       upload: record('upload'),

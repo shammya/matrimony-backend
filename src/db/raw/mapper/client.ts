@@ -38,5 +38,11 @@ export function mapClientMeta(value: unknown): ClientMeta {
 
 export function mapStaff(value: unknown): StaffMember {
   const row = staffRow.parse(value);
-  return { id: row.id, displayName: row.display_name, role: row.role, status: row.status };
+  return {
+    id: row.id,
+    displayName: row.display_name,
+    email: row.email,
+    role: row.role,
+    status: row.status,
+  };
 }

@@ -38,9 +38,9 @@ export const clientQueries = {
  LEFT JOIN matrimony.accounts o ON o.agency_id = p.agency_id AND o.id = p.owner_account_id
  WHERE p.agency_id = $1 AND p.id = $2`,
 
-  staff: `SELECT id, display_name, role, status FROM matrimony.accounts
+  staff: `SELECT id, display_name, email, role, status FROM matrimony.accounts
  WHERE agency_id = $1 AND role IN ('admin', 'agent') ORDER BY role, display_name`,
-  staffMember: `SELECT id, display_name, role, status FROM matrimony.accounts
+  staffMember: `SELECT id, display_name, email, role, status FROM matrimony.accounts
  WHERE agency_id = $1 AND id = $2 AND role IN ('admin', 'agent')`,
 
   // Changes who looks after a profile, nothing else (the database does not raise the profile's

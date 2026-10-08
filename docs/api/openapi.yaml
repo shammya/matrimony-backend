@@ -27,6 +27,7 @@ tags:
   - name: My photos
   - name: Review queue
   - name: Clients
+  - name: Staff
 
 paths:
   /health/live:
@@ -170,6 +171,59 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/staff-invitation/preview:
+    post:
+      tags: [Staff]
+      summary: What an invitation link is for
+      description: |
+        Public, 10 per minute, same-origin only. Lets the page greet the person before they choose
+        a password. It does not use the link up. A used, cancelled, expired or unknown link is 400
+        `LINK_INVALID_OR_EXPIRED`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LinkToken' }
+      responses:
+        '200':
+          description: The invited person and the role they are invited to.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffInvitationPreview' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/staff-invitation/accept:
+    post:
+      tags: [Staff]
+      summary: Accept an invitation, choose a password and sign in
+      description: |
+        Public, 10 per minute, same-origin only. The link works once, for 7 days, and only at the
+        agency that sent it. The account is created now, as verified and active, with the role the
+        admin chose (the request cannot name a role or an address), with the password; a session
+        starts exactly like a login (the cookie is set and the tokens are returned). Two requests
+        with the same link create one account. An address that got an account since the invitation
+        was sent is refused like a used link, and no existing account is ever changed. A password
+        that is the email is 400 `INVALID_REQUEST` with the field `password` and code `sameAsEmail`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AcceptStaffInvitationInput' }
+      responses:
+        '200':
+          description: The account exists and the person is signed in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /api/v1/auth/login:
@@ -1584,6 +1638,108 @@ paths:
               schema: { $ref: '#/components/schemas/StaffList' }
         '401': { $ref: '#/components/responses/Error401' }
         '403': { $ref: '#/components/responses/Error403' }
+  /api/v1/admin/staff/invitations:
+    get:
+      tags: [Staff]
+      summary: Invitations that have not been accepted or cancelled
+      description: |
+        Admins only. Newest first. `status` is `expired` for an open invitation whose link no longer
+        works; it can be sent again.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The open invitations of this agency.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffInvitationList' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+    post:
+      tags: [Staff]
+      summary: Invite a person to work as an agent or an admin
+      description: |
+        Admins only, 30 per 10 minutes by address, 30 an hour per admin and 3 an hour per invited
+        address. Emails the link (valid 7 days, once). Inviting an address that already has an open
+        invitation replaces it: a new link, the old one stops. An address that already has an
+        account is 409 `EMAIL_IN_USE`; a member is never turned into staff by an invitation.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffInviteInput' }
+      responses:
+        '201':
+          description: The invitation, now open.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffInvitation' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '409':
+          description: EMAIL_IN_USE.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/admin/staff/invitations/{invitationId}/resend:
+    post:
+      tags: [Staff]
+      summary: Send an open invitation again with a new link
+      description: |
+        Admins only. The earlier link stops working and the expiry starts again. 3 an hour per
+        invitation. 404 `INVITATION_NOT_FOUND` when it was accepted, cancelled or is unknown.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: invitationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The invitation with its new expiry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffInvitation' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          description: INVITATION_NOT_FOUND.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: EMAIL_IN_USE (the address got an account since).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/admin/staff/invitations/{invitationId}:
+    delete:
+      tags: [Staff]
+      summary: Cancel an open invitation
+      description: |
+        Admins only. Its link stops working at once. The record is kept. 404
+        `INVITATION_NOT_FOUND` when it was accepted, already cancelled or is unknown.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: invitationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204':
+          description: Cancelled.
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          description: INVITATION_NOT_FOUND.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 components:
   securitySchemes:
     bearerAuth:
@@ -2483,10 +2639,11 @@ components:
           }
     StaffMember:
       type: object
-      required: [id, displayName, role, status]
+      required: [id, displayName, email, role, status]
       properties:
         id: { type: string, format: uuid }
         displayName: { type: string }
+        email: { type: [string, 'null'] }
         role: { type: string, enum: [admin, agent] }
         status: { type: string, enum: [invited, active, disabled] }
     StaffList:
@@ -2496,6 +2653,61 @@ components:
         staff:
           type: array
           items: { $ref: '#/components/schemas/StaffMember' }
+
+    StaffInviteInput:
+      type: object
+      additionalProperties: false
+      required: [email, displayName, role, locale]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        displayName: { type: string, minLength: 1, maxLength: 100 }
+        role: { type: string, enum: [agent, admin] }
+        locale:
+          type: string
+          enum: [bn, en]
+          description: The language of the email and of the page its link opens.
+    StaffInvitation:
+      type: object
+      required: [id, email, displayName, role, locale, invitedByName, createdAt, expiresAt, status]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [agent, admin] }
+        locale: { type: string, enum: [bn, en] }
+        invitedByName: { type: string, description: The display name of the admin who invited. }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [pending, expired]
+          description: '`expired` is an open invitation whose link no longer works.'
+    StaffInvitationList:
+      type: object
+      required: [invitations]
+      properties:
+        invitations:
+          type: array
+          items: { $ref: '#/components/schemas/StaffInvitation' }
+    StaffInvitationPreview:
+      type: object
+      required: [email, displayName, role]
+      properties:
+        email: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [agent, admin] }
+    AcceptStaffInvitationInput:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: The one-time secret in the emailed link.
+        password:
+          type: string
+          description: At least 10 characters, and not the email address.
 
     Error:
       type: object
@@ -2526,6 +2738,7 @@ components:
                 password to approve a link with), GOOGLE_ALREADY_LINKED, GOOGLE_RETRY, OAUTH_CHALLENGE_EXPIRED,
                 OAUTH_CONTEXT_MISMATCH, and
                 for adding an email: EMAIL_ALREADY_SET, PHONE_REQUIRED, EMAIL_IN_USE, and
+                for inviting staff: INVITATION_NOT_FOUND (and EMAIL_IN_USE, LINK_INVALID_OR_EXPIRED), and
                 for phone codes: PHONE_NOT_CONFIGURED, PHONE_COUNTRY_NOT_SUPPORTED, PHONE_NOT_REGISTERED, CODE_RATE_LIMITED (with details.retryAfter,
                 seconds), SMS_UNAVAILABLE, CODE_INVALID, CODE_EXPIRED, PHONE_RETRY, PHONE_IN_USE, and
                 for staff: REVIEW_NOT_FOUND, REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED,

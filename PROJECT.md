@@ -1,6 +1,6 @@
 # Project handoff: read this first
 
-Last updated: 9 October 2026. If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
+Last updated: 9 October 2026 (staff invitations). If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
 
 This file lives in the **backend** repo. The **frontend** repo has a shorter `PROJECT.md` that points here.
 
@@ -50,7 +50,7 @@ Needed: Node 24, PostgreSQL 17, Redis **6.2 or newer** (the code uses `GETDEL`; 
 3. Start PostgreSQL and Redis (`docker compose up -d` works, or use local installs).
 4. `npm run db:migrate` (uses `MIGRATION_DATABASE_URL`; migrations are numbered `001`…`009` and are never edited once applied).
 5. Seed the local agency and runtime role with `scripts/local-seed.sql` (see README, "Local setup").
-6. Create the first administrator: `scripts/provision-account.sql`, then `npm run auth:set-password -- --agency <uuid> --email <email>`.
+6. Create the first administrator: `scripts/provision-account.sql`, then `npm run auth:set-password -- --agency <uuid> --email <email>`. Every other staff member is invited by an admin from the Staff page (the link is printed in the backend terminal as `[dev mail]`).
 7. `npm run dev` (API on 4000). `npm run dev:worker` is only for the MongoDB event copy.
 
 **Frontend** (`frontend/`): `npm ci`, `cp .env.example .env.local` (`BACKEND_URL=http://127.0.0.1:4000`), `npm run dev`, open `http://localhost:3000`. The hostname `localhost` is the seeded agency.
@@ -83,7 +83,7 @@ Status key: **Done** = confirmed by the user in a real browser (or proven by tes
 | Sign in with a phone number and code                                        | **Done**                                   | **Done**                                        |
 | Add an email to a phone-only account (code to their own phone, then a link) | **Done**                                   | **Done**                                        |
 | Password at phone registration, login with phone + password                 | **Done**                                   | **Done**                                        |
-| Change the password with a code to the phone                                | **Review**                                 | **Review**                                      |
+| Change the password with a code to the phone                                | **Done**                                   | **Done**                                        |
 | Event log (outbox → MongoDB worker)                                         | Review (worker never run here: no MongoDB) | n/a                                             |
 | Local environment                                                           | Done                                       | Done                                            |
 | Tests and CI                                                                | n/a                                        | Done (CI workflow written, never run on GitHub) |
@@ -95,14 +95,14 @@ Status key: **Done** = confirmed by the user in a real browser (or proven by tes
 
 ### Phase 2: Onboarding and approval (complete)
 
-| Feature                                                      | Backend | Frontend                                                   |
-| ------------------------------------------------------------ | ------- | ---------------------------------------------------------- |
-| 1.2 Registration (email link, Google, phone)                 | Done    | Done (the email link signing straight in is still untried) |
-| 2.1 My Profile, edit requests, photos                        | Done    | Done                                                       |
-| 4.2 Approval queue (staff review profile changes and photos) | Done    | Done                                                       |
-| 4.3 Agent client management (assisted service)               | Done    | Done                                                       |
+| Feature                                                      | Backend                          | Frontend                                      |
+| ------------------------------------------------------------ | -------------------------------- | --------------------------------------------- |
+| 1.2 Registration (email link, Google, phone)                 | Done                             | Done                                          |
+| 2.1 My Profile, edit requests, photos                        | Done                             | Done                                          |
+| 4.2 Approval queue (staff review profile changes and photos) | Done                             | Done                                          |
+| 4.3 Agent client management (assisted service)               | Done (staff invitations: Review) | Done (Staff page and invitation page: Review) |
 
-Not built in Phase 2: client photos, inviting staff by email.
+Staff are invited by email from the admin's Staff page (built 9 October 2026, **Review**: not yet tried in a real browser). Not built in Phase 2: client photos, disabling or removing staff, changing a staff member's role.
 
 ### Phase 3: Discovery loop (not started)
 
@@ -139,6 +139,7 @@ The original design used an external identity provider (Auth0). On 7 October 202
 - **Phone and password login:** `POST /auth/login` takes an email or a phone number (one of them) with the password; same answers and the same pause after five wrong passwords, counted per number.
 - **Choosing a new password with a code:** a signed-in member with a verified phone can set a new password with a code to that phone (`POST /me/password`); it ends every session. It is the recovery path for a phone member without an email.
 - **Adding an email to a phone-only account:** needs a code sent to the account's own phone (so a stolen session is not enough), then a link sent to the new address; opening the link stores it, verified, and signs nobody in. A password is then set with the usual forgot-password link. An existing email is never replaced.
+- **Staff accounts:** an admin invites a person by email as an agent or an admin (`/admin/staff/invitations`); the person opens the link (7 days, once), chooses a password and is signed in. The role comes only from the invitation. An address that already has an account is never invited. Not built: disabling staff, changing a role.
 - **Development senders:** emails and texts are printed in the backend terminal (`MAIL_DRIVER=console`, `SMS_DRIVER=console`). The configuration refuses both in production.
 
 Not built in authentication: a real SMS gateway and a real email service, the production Google consent screen, changing an existing email, changing a password while signed in, a list of devices, two-factor for staff, device sessions for the mobile app, and the **security review**.

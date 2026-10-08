@@ -12,6 +12,7 @@ import {
   unusedPhotos,
   unusedReviews,
   unusedClients,
+  unusedInvitations,
   authFor,
   unusedAccess,
 } from './fixtures.js';
@@ -42,6 +43,7 @@ async function setup(role: 'member' | 'agent' = 'member') {
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    invitations: unusedInvitations,
     profiles: {
       get: record('get'),
       save: record('save'),
