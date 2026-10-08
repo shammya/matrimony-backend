@@ -428,12 +428,18 @@ paths:
   /api/v1/auth/phone/start:
     post:
       tags: [Auth]
-      summary: Send a code to sign in or register with a phone number
+      summary: Send a code to log in or to register with a phone number
       description: |
         Public, 10 per 10 minutes by address, same-origin only. Sends a six-digit code by text
-        message to the number. It answers and sends the same whether or not the number has an
-        account, and one request serves both signing in and registering. A code works once, for 5
-        minutes, and asking again replaces it. A number can be sent one code a minute and 5 an hour,
+        message. `purpose` says why. A code to **log in** is sent only to a number that has an
+        active account; for any other number (or a disabled account) nothing is sent and nothing is
+        paid for, and the answer is 404 `PHONE_NOT_REGISTERED`, so the page can send the person to
+        register. The per-number limits below apply first. A code to
+        **register** is sent to any allowed number, since a new member has no account yet. The two
+        kinds of code are kept apart: one cannot be used for the other. Only numbers of the
+        allowed countries (`SMS_ALLOWED_COUNTRIES`, Bangladesh by default, see
+        `phoneCountries` in `/auth/methods`) are sent a code: 400 `PHONE_COUNTRY_NOT_SUPPORTED`.
+        A code works once, for 5 minutes, and asking again replaces it. A number can be sent one code a minute and 5 an hour,
         and an agency 2000 a day: 429 `CODE_RATE_LIMITED` with `Retry-After`. 502
         `SMS_UNAVAILABLE` when the gateway does not accept the message, 404
         `PHONE_NOT_CONFIGURED` when no sender is set up. Numbers are stored as E.164; Bangladeshi
@@ -654,7 +660,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/PhoneStartInput' }
+            schema: { $ref: '#/components/schemas/PhoneAttachStartInput' }
       responses:
         '202':
           description: A code was sent.
@@ -1992,11 +1998,17 @@ components:
           description: A short machine-readable outcome, such as `verification_sent` or `verified`.
     AuthMethods:
       type: object
-      required: [password, google, phone]
+      required: [password, google, phone, phoneCountries]
       properties:
         password: { type: boolean }
         google: { type: boolean }
         phone: { type: boolean }
+        phoneCountries:
+          {
+            type: array,
+            items: { type: string },
+            description: Calling codes (without +) whose numbers may be sent a code.,
+          }
     ReauthStartInput:
       type: object
       additionalProperties: false
@@ -2017,24 +2029,45 @@ components:
       properties:
         email: { type: string, format: email }
         code: { type: string, description: The six digits sent to the account's own phone. }
-        locale: { type: string, enum: [bn, en], description: The language of the email and of the page its link opens. }
+        locale:
+          {
+            type: string,
+            enum: [bn, en],
+            description: The language of the email and of the page its link opens.,
+          }
     PhoneStartInput:
       type: object
       additionalProperties: false
-      required: [phone, locale]
+      required: [phone, locale, purpose]
       properties:
         phone:
           type: string
           description: A Bangladeshi mobile number (01712345678, 8801712345678, +8801712345678) or any number with its + and country code. Bengali digits are accepted.
         locale: { type: string, enum: [bn, en], description: The language of the text message. }
+        purpose: { type: string, enum: [login, register], description: Why the code is wanted. }
+    PhoneAttachStartInput:
+      type: object
+      additionalProperties: false
+      required: [phone, locale]
+      description: Adding or changing the number of the signed-in account. It takes no purpose, because the code is always for that account.
+      properties:
+        phone: { type: string }
+        locale: { type: string, enum: [bn, en], description: The language of the text message. }
     PhoneVerifyInput:
       type: object
       additionalProperties: false
-      required: [phone, code, locale]
+      required: [phone, code, locale, purpose]
       properties:
         phone: { type: string }
         code: { type: string, description: The six digits (Bengali digits are accepted). }
-        locale: { type: string, enum: [bn, en], description: The language of the pages that follow. }
+        purpose:
+          {
+            type: string,
+            enum: [login, register],
+            description: The purpose the code was asked for.,
+          }
+        locale:
+          { type: string, enum: [bn, en], description: The language of the pages that follow. }
     PhoneAttachInput:
       type: object
       additionalProperties: false
@@ -2146,7 +2179,12 @@ components:
       description: Exactly one of `email` and `phone`.
       properties:
         email: { type: string, maxLength: 254, description: Trimmed and lower-cased by the server. }
-        phone: { type: string, maxLength: 40, description: A Bangladeshi mobile number or any number with its + and country code. Bengali digits are accepted. }
+        phone:
+          {
+            type: string,
+            maxLength: 40,
+            description: A Bangladeshi mobile number or any number with its + and country code. Bengali digits are accepted.,
+          }
         password: { type: string, minLength: 1, maxLength: 256 }
     ForgotPasswordInput:
       type: object
@@ -2488,7 +2526,7 @@ components:
                 password to approve a link with), GOOGLE_ALREADY_LINKED, GOOGLE_RETRY, OAUTH_CHALLENGE_EXPIRED,
                 OAUTH_CONTEXT_MISMATCH, and
                 for adding an email: EMAIL_ALREADY_SET, PHONE_REQUIRED, EMAIL_IN_USE, and
-                for phone codes: PHONE_NOT_CONFIGURED, CODE_RATE_LIMITED (with details.retryAfter,
+                for phone codes: PHONE_NOT_CONFIGURED, PHONE_COUNTRY_NOT_SUPPORTED, PHONE_NOT_REGISTERED, CODE_RATE_LIMITED (with details.retryAfter,
                 seconds), SMS_UNAVAILABLE, CODE_INVALID, CODE_EXPIRED, PHONE_RETRY, PHONE_IN_USE, and
                 for staff: REVIEW_NOT_FOUND, REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED,
                 REVIEW_OUT_OF_DATE, REVIEW_OWN_SUBMISSION, PROFILE_SELF_SERVICE,

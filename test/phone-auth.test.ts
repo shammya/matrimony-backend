@@ -22,7 +22,7 @@ interface Member {
   status: 'invited' | 'active' | 'disabled';
 }
 
-function setup() {
+function setup(options: { countries?: string[] } = {}) {
   const box = new SecretBox('ab'.repeat(32));
   const messages: SmsMessage[] = [];
   const logs: string[] = [];
@@ -73,6 +73,7 @@ function setup() {
         counters.set(name, (counters.get(name) ?? 0) + 1);
         return { count: counters.get(name)!, retryAfter: 42 };
       },
+      peek: async (name) => ({ count: counters.get(name) ?? 0, retryAfter: 42 }),
     },
     {
       put: async (_purpose, scope, key, sealed) => {
@@ -129,6 +130,7 @@ function setup() {
     },
     box,
     pino({ level: 'info' }, { write: (line: string) => logs.push(line) }),
+    options.countries,
   );
 
   const context = { agencyId: agency, agencyName: 'Marriage Solution BD' };
@@ -181,7 +183,7 @@ const signupInput = {
 
 await test('asking for a code sends one text with a six-digit code, in the language being read', async () => {
   const f = setup();
-  const answer = await f.process.sendCode(f.context, phone, 'bn');
+  const answer = await f.process.sendCode(f.context, phone, 'bn', 'register');
   assert.deepEqual(answer, { resendAfter: 60, expiresIn: 300 });
   assert.equal(f.messages.length, 1);
   assert.equal(f.messages[0]!.to, phone);
@@ -189,13 +191,13 @@ await test('asking for a code sends one text with a six-digit code, in the langu
   assert.match(f.messages[0]!.text, /কোড \d{6}/);
   assert.match(f.messages[0]!.text, /৫ মিনিট/);
 
-  await f.process.sendCode({ ...f.context }, '+8801812345678', 'en');
+  await f.process.sendCode({ ...f.context }, '+8801812345678', 'en', 'register');
   assert.match(f.messages[1]!.text, /your code is \d{6}\. It works for 5 minutes/);
 });
 
 await test('the code is never stored as typed: only a keyed fingerprint is kept', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   const code6 = f.lastCode();
   const everything = JSON.stringify([...f.stored]);
   assert.equal(everything.includes(code6), false);
@@ -206,8 +208,8 @@ await test('the code is never stored as typed: only a keyed fingerprint is kept'
 await test('a number that has an account and one that has not are treated exactly alike when asking', async () => {
   const f = setup();
   f.addMember({ phone: '+8801811111111' });
-  const known = await f.process.sendCode(f.context, '+8801811111111', 'en');
-  const unknown = await f.process.sendCode(f.context, '+8801922222222', 'en');
+  const known = await f.process.sendCode(f.context, '+8801811111111', 'en', 'register');
+  const unknown = await f.process.sendCode(f.context, '+8801922222222', 'en', 'register');
   assert.deepEqual(known, unknown);
   assert.equal(f.messages.length, 2);
   assert.equal(
@@ -218,9 +220,9 @@ await test('a number that has an account and one that has not are treated exactl
 
 await test('a second code cannot be asked for within a minute, and the answer says how long to wait', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   await assert.rejects(
-    () => f.process.sendCode(f.context, phone, 'en'),
+    () => f.process.sendCode(f.context, phone, 'en', 'register'),
     (error) =>
       error instanceof AppError &&
       error.status === 429 &&
@@ -229,18 +231,18 @@ await test('a second code cannot be asked for within a minute, and the answer sa
   );
   assert.equal(f.messages.length, 1);
   // Another number is not held back by this one.
-  await f.process.sendCode(f.context, '+8801812345678', 'en');
+  await f.process.sendCode(f.context, '+8801812345678', 'en', 'register');
   assert.equal(f.messages.length, 2);
 });
 
 await test('one number gets at most five codes an hour, so nobody can be flooded with texts', async () => {
   const f = setup();
   for (let i = 0; i < 5; i++) {
-    await f.process.sendCode(f.context, phone, 'en');
+    await f.process.sendCode(f.context, phone, 'en', 'register');
     f.passTheMinute();
   }
   await assert.rejects(
-    () => f.process.sendCode(f.context, phone, 'en'),
+    () => f.process.sendCode(f.context, phone, 'en', 'register'),
     code(429, 'CODE_RATE_LIMITED'),
   );
   assert.equal(f.messages.length, 5);
@@ -250,12 +252,12 @@ await test('one agency cannot be made to pay for more than a day limit of codes'
   const f = setup();
   f.counters.set(`phone-day:${agency}`, 2000);
   await assert.rejects(
-    () => f.process.sendCode(f.context, phone, 'en'),
+    () => f.process.sendCode(f.context, phone, 'en', 'register'),
     code(429, 'CODE_RATE_LIMITED'),
   );
   assert.equal(f.messages.length, 0);
   // Another agency has its own limit.
-  await f.process.sendCode({ agencyId: otherAgency, agencyName: 'Other' }, phone, 'en');
+  await f.process.sendCode({ agencyId: otherAgency, agencyName: 'Other' }, phone, 'en', 'register');
   assert.equal(f.messages.length, 1);
 });
 
@@ -263,7 +265,7 @@ await test('a gateway that fails is a plain 502, and nothing personal is logged'
   const f = setup();
   f.breakSms();
   await assert.rejects(
-    () => f.process.sendCode(f.context, phone, 'en'),
+    () => f.process.sendCode(f.context, phone, 'en', 'register'),
     code(502, 'SMS_UNAVAILABLE'),
   );
   const written = f.logs.join('\n');
@@ -275,8 +277,15 @@ await test('a gateway that fails is a plain 502, and nothing personal is logged'
 await test('the right code signs the owner of the number in, as the account that has it', async () => {
   const f = setup();
   const member = f.addMember();
-  await f.process.sendCode(f.context, phone, 'en');
-  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'req-1');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const outcome = await f.process.verifyCode(
+    agency,
+    phone,
+    f.lastCode(),
+    'en',
+    'register',
+    'req-1',
+  );
   assert.equal(outcome.kind, 'session');
   assert.equal(outcome.kind === 'session' && outcome.sessionId, `session-for-${member.account.id}`);
   assert.deepEqual(f.sessions, [member.account.id]);
@@ -285,34 +294,37 @@ await test('the right code signs the owner of the number in, as the account that
 await test('a wrong code signs nobody in and can be tried again', async () => {
   const f = setup();
   f.addMember();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   const right = f.lastCode();
   const wrong = right === '000000' ? '000001' : '000000';
   await assert.rejects(
-    () => f.process.verifyCode(agency, phone, wrong, 'en', 'r'),
+    () => f.process.verifyCode(agency, phone, wrong, 'en', 'register', 'r'),
     code(400, 'CODE_INVALID'),
   );
   assert.equal(f.sessions.length, 0);
-  assert.equal((await f.process.verifyCode(agency, phone, right, 'en', 'r')).kind, 'session');
+  assert.equal(
+    (await f.process.verifyCode(agency, phone, right, 'en', 'register', 'r')).kind,
+    'session',
+  );
 });
 
 await test('five wrong guesses cancel the code: even the right one no longer works', async () => {
   const f = setup();
   f.addMember();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   const right = f.lastCode();
   const wrong = right === '000000' ? '000001' : '000000';
   for (let i = 0; i < 4; i++)
     await assert.rejects(
-      () => f.process.verifyCode(agency, phone, wrong, 'en', 'r'),
+      () => f.process.verifyCode(agency, phone, wrong, 'en', 'register', 'r'),
       code(400, 'CODE_INVALID'),
     );
   await assert.rejects(
-    () => f.process.verifyCode(agency, phone, wrong, 'en', 'r'),
+    () => f.process.verifyCode(agency, phone, wrong, 'en', 'register', 'r'),
     code(400, 'CODE_EXPIRED'),
   );
   await assert.rejects(
-    () => f.process.verifyCode(agency, phone, right, 'en', 'r'),
+    () => f.process.verifyCode(agency, phone, right, 'en', 'register', 'r'),
     code(400, 'CODE_EXPIRED'),
   );
   assert.equal(f.sessions.length, 0);
@@ -321,11 +333,11 @@ await test('five wrong guesses cancel the code: even the right one no longer wor
 await test('a code works once', async () => {
   const f = setup();
   f.addMember();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   const right = f.lastCode();
-  await f.process.verifyCode(agency, phone, right, 'en', 'r');
+  await f.process.verifyCode(agency, phone, right, 'en', 'register', 'r');
   await assert.rejects(
-    () => f.process.verifyCode(agency, phone, right, 'en', 'r'),
+    () => f.process.verifyCode(agency, phone, right, 'en', 'register', 'r'),
     code(400, 'CODE_EXPIRED'),
   );
   assert.equal(f.sessions.length, 1);
@@ -334,41 +346,47 @@ await test('a code works once', async () => {
 await test('asking again cancels the earlier code, so only the newest works', async () => {
   const f = setup();
   f.addMember();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   const first = f.lastCode();
   f.passTheMinute();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   const second = f.lastCode();
   if (first !== second)
     await assert.rejects(
-      () => f.process.verifyCode(agency, phone, first, 'en', 'r'),
+      () => f.process.verifyCode(agency, phone, first, 'en', 'register', 'r'),
       code(400, 'CODE_INVALID'),
     );
-  assert.equal((await f.process.verifyCode(agency, phone, second, 'en', 'r')).kind, 'session');
+  assert.equal(
+    (await f.process.verifyCode(agency, phone, second, 'en', 'register', 'r')).kind,
+    'session',
+  );
 });
 
 await test('a code only works for the number and the agency it was sent for', async () => {
   const f = setup();
   f.addMember();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   const right = f.lastCode();
   await assert.rejects(
-    () => f.process.verifyCode(agency, '+8801812345678', right, 'en', 'r'),
+    () => f.process.verifyCode(agency, '+8801812345678', right, 'en', 'register', 'r'),
     code(400, 'CODE_EXPIRED'),
   );
   await assert.rejects(
-    () => f.process.verifyCode(otherAgency, phone, right, 'en', 'r'),
+    () => f.process.verifyCode(otherAgency, phone, right, 'en', 'register', 'r'),
     code(400, 'CODE_EXPIRED'),
   );
-  assert.equal((await f.process.verifyCode(agency, phone, right, 'en', 'r')).kind, 'session');
+  assert.equal(
+    (await f.process.verifyCode(agency, phone, right, 'en', 'register', 'r')).kind,
+    'session',
+  );
 });
 
 await test('a disabled account is not signed in, even with the right code', async () => {
   const f = setup();
   f.addMember({ status: 'disabled' });
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   await assert.rejects(
-    () => f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r'),
+    () => f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'register', 'r'),
     code(403, 'ACCOUNT_NOT_ACTIVE'),
   );
   assert.equal(f.sessions.length, 0);
@@ -376,8 +394,8 @@ await test('a disabled account is not signed in, even with the right code', asyn
 
 await test('a right code for a number with no account creates nothing: the person is asked to agree first', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
-  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'bn', 'r');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'bn', 'register', 'r');
   assert.equal(outcome.kind, 'signup');
   assert.equal(f.members.length, 0);
   assert.equal(f.sessions.length, 0);
@@ -390,8 +408,8 @@ await test('a right code for a number with no account creates nothing: the perso
 
 await test('agreeing creates the member with the proven number and the name given, and signs them in', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
-  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'bn', 'r');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'bn', 'register', 'r');
   const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
   const session = await f.process.signup(
     agency,
@@ -412,17 +430,17 @@ await test('agreeing creates the member with the proven number and the name give
   assert.deepEqual(f.sessions, [f.members[0]!.account.id]);
   // From now on the number signs in.
   f.passTheMinute();
-  await f.process.sendCode(f.context, phone, 'en');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
   assert.equal(
-    (await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r')).kind,
+    (await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'register', 'r')).kind,
     'session',
   );
 });
 
 await test('the agree step works once, and a double press cannot create two accounts', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
-  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'register', 'r');
   const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
   await Promise.all([
     f.process.signup(agency, pendingId, signupInput, 'r').catch(() => null),
@@ -437,8 +455,8 @@ await test('the agree step works once, and a double press cannot create two acco
 
 await test('the agree step belongs to the agency it began at and to nobody else', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
-  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'register', 'r');
   const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
   await assert.rejects(
     () => f.process.pendingSignup(otherAgency, pendingId),
@@ -457,8 +475,8 @@ await test('the agree step belongs to the agency it began at and to nobody else'
 
 await test('a number that got an account while the step was open is not given a second one', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
-  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'register', 'r');
   const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
   f.addMember();
   await assert.rejects(
@@ -490,7 +508,7 @@ await test('adding a number: a wrong code adds nothing, and a code is not shared
   );
   // A code meant for adding cannot sign anyone in.
   await assert.rejects(
-    () => f.process.verifyCode(agency, phone, attachCode, 'en', 'r'),
+    () => f.process.verifyCode(agency, phone, attachCode, 'en', 'register', 'r'),
     code(400, 'CODE_EXPIRED'),
   );
   assert.equal(f.attached.length, 0);
@@ -539,8 +557,8 @@ await test('asking for an adding code for a number that has an account looks the
 
 await test('the password chosen at registration is hashed and stored with the new account, never kept as typed', async () => {
   const f = setup();
-  await f.process.sendCode(f.context, phone, 'en');
-  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r');
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'register', 'r');
   const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
   await f.process.signup(agency, pendingId, signupInput, 'r');
   assert.equal(f.registered[0]!.passwordHash, 'hash-of-a strong phone password');
@@ -551,8 +569,8 @@ await test('the password chosen at registration is hashed and stored with the ne
 await test('a password that is the phone number is refused in either form, and the step stays open for another try', async () => {
   for (const password of ['01712345678', '+8801712345678', '8801712345678', '০১৭১২৩৪৫৬৭৮']) {
     const f = setup();
-    await f.process.sendCode(f.context, phone, 'en');
-    const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r');
+    await f.process.sendCode(f.context, phone, 'en', 'register');
+    const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'register', 'r');
     const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
     await assert.rejects(
       () => f.process.signup(agency, pendingId, { ...signupInput, password }, 'r'),
@@ -568,4 +586,133 @@ await test('a password that is the phone number is refused in either form, and t
     await f.process.signup(agency, pendingId, signupInput, 'r');
     assert.equal(f.members.length, 1, password);
   }
+});
+
+// ---- a code to log in goes only to a number that has an account ----
+await test('a code to log in is sent to a number that has an active account', async () => {
+  const f = setup();
+  f.addMember();
+  const answer = await f.process.sendCode(f.context, phone, 'en', 'login');
+  await f.process.idle();
+  assert.deepEqual(answer, { resendAfter: 60, expiresIn: 300 });
+  assert.equal(f.messages.length, 1);
+  assert.equal(f.messages[0]!.to, phone);
+  assert.equal(
+    (await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'login', 'r')).kind,
+    'session',
+  );
+});
+
+await test('a code to log in is not sent, and not paid for, to a number with no account or a disabled one, which are told it is not registered', async () => {
+  const f = setup();
+  f.addMember({ phone: '+8801811111111', status: 'disabled' });
+  for (const number of ['+8801922222222', '+8801811111111']) {
+    await assert.rejects(
+      () => f.process.sendCode(f.context, number, 'en', 'login'),
+      code(404, 'PHONE_NOT_REGISTERED'),
+    );
+    await f.process.idle();
+  }
+  assert.equal(f.messages.length, 0);
+  // Nothing was stored for a code that was never sent, and the agency's daily count was not used.
+  assert.equal(f.stored.size, 0);
+  assert.equal(f.counters.get(`phone-day:${agency}`), undefined);
+});
+
+await test('the same limits apply to a number with an account and one without, so numbers cannot be scanned', async () => {
+  const f = setup();
+  f.addMember({ phone: '+8801811111111' });
+  await f.process.sendCode(f.context, '+8801811111111', 'en', 'login');
+  await assert.rejects(
+    () => f.process.sendCode(f.context, '+8801922222222', 'en', 'login'),
+    code(404, 'PHONE_NOT_REGISTERED'),
+  );
+  // Asking again within the minute is refused for both, before the account is looked at.
+  for (const number of ['+8801811111111', '+8801922222222'])
+    await assert.rejects(
+      () => f.process.sendCode(f.context, number, 'en', 'login'),
+      (error) =>
+        error instanceof AppError && error.status === 429 && error.code === 'CODE_RATE_LIMITED',
+    );
+});
+
+await test('the text to log in is sent without waiting for the gateway, so the time taken tells nothing, and a failure is logged without the number', async () => {
+  const f = setup();
+  f.addMember();
+  f.breakSms();
+  const answer = await f.process.sendCode(f.context, phone, 'en', 'login');
+  assert.deepEqual(answer, { resendAfter: 60, expiresIn: 300 });
+  await f.process.idle();
+  const written = f.logs.join('\n');
+  assert.match(written, /SMS_SEND_FAILED/);
+  assert.equal(written.includes(phone), false);
+  assert.equal(written.includes('gateway refused'), false);
+});
+
+await test('a code to register is sent to any allowed number, and a code to log in cannot register or the other way round', async () => {
+  const f = setup();
+  f.addMember();
+  await f.process.sendCode(f.context, phone, 'en', 'login');
+  await f.process.idle();
+  const loginCode = f.lastCode();
+  await assert.rejects(
+    () => f.process.verifyCode(agency, phone, loginCode, 'en', 'register', 'r'),
+    code(400, 'CODE_EXPIRED'),
+  );
+  f.passTheMinute();
+  await f.process.sendCode(f.context, phone, 'en', 'register');
+  const registerCode = f.lastCode();
+  await assert.rejects(
+    () => f.process.verifyCode(agency, phone, registerCode, 'en', 'login', 'r'),
+    // The login code is still waiting there, so this is a wrong guess at it.
+    code(400, 'CODE_INVALID'),
+  );
+  // Each works for its own purpose.
+  assert.equal(
+    (await f.process.verifyCode(agency, phone, registerCode, 'en', 'register', 'r')).kind,
+    'session',
+  );
+});
+
+await test('a new number registers with a code to register, and the daily count is used only when a text is sent', async () => {
+  const f = setup();
+  await f.process.sendCode(f.context, '+8801955555555', 'en', 'register');
+  assert.equal(f.messages.length, 1);
+  assert.equal(f.counters.get(`phone-day:${agency}`), 1);
+});
+
+// ---- only some countries are sent codes ----
+await test('a number from a country that is not allowed is refused before anything is counted or sent', async () => {
+  const f = setup();
+  for (const purpose of ['register', 'login'] as const)
+    await assert.rejects(
+      () => f.process.sendCode(f.context, '+14155552671', 'en', purpose),
+      code(400, 'PHONE_COUNTRY_NOT_SUPPORTED'),
+      purpose,
+    );
+  const member = f.addMember({ phone: null });
+  await assert.rejects(
+    () => f.process.sendAttachCode(f.context, member.account, '+447911123456', 'en'),
+    code(400, 'PHONE_COUNTRY_NOT_SUPPORTED'),
+  );
+  await assert.rejects(
+    () => f.process.sendReauthCode(f.context, member.account, '+14155552671', 'en'),
+    code(400, 'PHONE_COUNTRY_NOT_SUPPORTED'),
+  );
+  assert.equal(f.messages.length, 0);
+  assert.equal(f.counters.size, 0);
+});
+
+await test('a Bangladeshi number is allowed by default, and more countries can be allowed by a setting', async () => {
+  const bangladesh = setup();
+  await bangladesh.process.sendCode(bangladesh.context, '+8801712345678', 'en', 'register');
+  assert.equal(bangladesh.messages.length, 1);
+
+  const more = setup({ countries: ['880', '971'] });
+  await more.process.sendCode(more.context, '+971501234567', 'en', 'register');
+  assert.equal(more.messages.length, 1);
+  await assert.rejects(
+    () => more.process.sendCode(more.context, '+14155552671', 'en', 'register'),
+    code(400, 'PHONE_COUNTRY_NOT_SUPPORTED'),
+  );
 });

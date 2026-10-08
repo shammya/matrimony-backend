@@ -69,24 +69,35 @@ await test('a number from another country needs its + and country code', () => {
 const start = problems(phoneStartInputSchema);
 
 await test('asking for a code needs a number and the language, and nothing else', () => {
-  assert.deepEqual(start({ phone: '01712345678', locale: 'bn' }), []);
-  assert.deepEqual(start({ locale: 'bn' }), ['phone:required']);
-  assert.deepEqual(start({ phone: '', locale: 'bn' }), ['phone:required']);
-  assert.deepEqual(start({ phone: '12345', locale: 'bn' }), ['phone:invalidPhone']);
-  assert.deepEqual(start({ phone: '01712345678', locale: 'fr' }), ['locale:invalidOption']);
-  assert.notDeepEqual(start({ phone: '01712345678', locale: 'bn', role: 'admin' }), []);
+  assert.deepEqual(start({ phone: '01712345678', locale: 'bn', purpose: 'login' }), []);
+  assert.deepEqual(start({ locale: 'bn', purpose: 'login' }), ['phone:required']);
+  assert.deepEqual(start({ phone: '', locale: 'bn', purpose: 'login' }), ['phone:required']);
+  assert.deepEqual(start({ phone: '12345', locale: 'bn', purpose: 'login' }), [
+    'phone:invalidPhone',
+  ]);
+  assert.deepEqual(start({ phone: '01712345678', locale: 'fr', purpose: 'login' }), [
+    'locale:invalidOption',
+  ]);
+  assert.notDeepEqual(
+    start({ phone: '01712345678', locale: 'bn', purpose: 'login', role: 'admin' }),
+    [],
+  );
 });
 
 await test('the number is read as E.164 once it has been accepted', () => {
-  const parsed = phoneStartInputSchema.parse({ phone: ' 017 1234 5678 ', locale: 'en' });
-  assert.deepEqual(parsed, { phone: '+8801712345678', locale: 'en' });
+  const parsed = phoneStartInputSchema.parse({
+    phone: ' 017 1234 5678 ',
+    locale: 'en',
+    purpose: 'login',
+  });
+  assert.deepEqual(parsed, { phone: '+8801712345678', locale: 'en', purpose: 'login' });
 });
 
 const verify = problems(phoneVerifyInputSchema);
 
 await test('a code is exactly six digits, however they were typed', () => {
   assert.equal(PHONE_CODE_LENGTH, 6);
-  const base = { phone: '01712345678', locale: 'bn' };
+  const base = { phone: '01712345678', locale: 'bn', purpose: 'register' };
   assert.deepEqual(verify({ ...base, code: '123456' }), []);
   assert.equal(phoneVerifyInputSchema.parse({ ...base, code: ' 123 456 ' }).code, '123456');
   assert.equal(phoneVerifyInputSchema.parse({ ...base, code: '১২৩৪৫৬' }).code, '123456');
@@ -186,4 +197,29 @@ await test('the password chosen at registration follows the same rules as any ne
   assert.deepEqual(signup({ ...base, password: 'x'.repeat(129) }), ['password:tooLong']);
   assert.deepEqual(signup({ ...base, password: 'a strong phone password' }), []);
   assert.deepEqual(signup({ ...base }), ['password:required']);
+});
+
+await test('a code is asked for and checked for a purpose, and only login and register exist', () => {
+  for (const purpose of ['login', 'register'])
+    assert.deepEqual(start({ phone: '01712345678', locale: 'bn', purpose }), []);
+  assert.deepEqual(start({ phone: '01712345678', locale: 'bn' }), ['purpose:invalidOption']);
+  for (const purpose of ['signin', 'admin', '', 1, null])
+    assert.deepEqual(
+      start({ phone: '01712345678', locale: 'bn', purpose }),
+      ['purpose:invalidOption'],
+      String(purpose),
+    );
+  assert.deepEqual(verify({ phone: '01712345678', locale: 'bn', code: '123456' }), [
+    'purpose:invalidOption',
+  ]);
+});
+
+await test('the countries that may be sent a code are Bangladesh by default, and can be set', () => {
+  assert.deepEqual(loadConfig(env).SMS_ALLOWED_COUNTRIES, ['880']);
+  assert.deepEqual(loadConfig({ ...env, SMS_ALLOWED_COUNTRIES: '880,971' }).SMS_ALLOWED_COUNTRIES, [
+    '880',
+    '971',
+  ]);
+  for (const bad of ['', '+880', '880,', 'bd', '12345', '880 971'])
+    assert.throws(() => loadConfig({ ...env, SMS_ALLOWED_COUNTRIES: bad }), bad);
 });

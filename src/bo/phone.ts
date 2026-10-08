@@ -22,20 +22,32 @@ export const phoneCodeSchema = z
   .transform((value) => asciiDigits(value).replace(/\s/g, ''))
   .pipe(z.string().regex(new RegExp(`^[0-9]{${PHONE_CODE_LENGTH}}$`), fail('invalidCode')));
 
-/** Asking for a code. The same request serves signing in and registering. */
+/**
+ * Why a code is wanted. A code to **log in** is sent only to a number that already has an account,
+ * so nobody can spend the agency's money by typing other people's numbers into the login page. A
+ * code to **register** goes to any allowed number, because a new member has no account yet. The
+ * answer is the same either way.
+ */
+export const PHONE_PURPOSES = ['login', 'register'] as const;
+
+/** Asking for a code. */
 export const phoneStartInputSchema = z
   .object({
     phone: phoneSchema,
+    purpose: z.enum(PHONE_PURPOSES, fail('invalidOption')),
     /** The language the person is reading, for the text message and the pages that follow. */
     locale: z.enum(REGISTRATION_LOCALES, fail('invalidOption')),
   })
   .strict();
 export type PhoneStartInput = z.output<typeof phoneStartInputSchema>;
+export type PhonePurpose = (typeof PHONE_PURPOSES)[number];
 
 export const phoneVerifyInputSchema = z
   .object({
     phone: phoneSchema,
     code: phoneCodeSchema,
+    /** Which kind of code it is: the two are kept apart. */
+    purpose: z.enum(PHONE_PURPOSES, fail('invalidOption')),
     locale: z.enum(REGISTRATION_LOCALES, fail('invalidOption')),
   })
   .strict();
@@ -79,7 +91,9 @@ export const pendingPhoneSignupSchema = z.object({
 export type PendingPhoneSignup = z.output<typeof pendingPhoneSignupSchema>;
 
 /** Adding or changing the number of the signed-in account. The account is the session's. */
-export const phoneAttachStartInputSchema = phoneStartInputSchema;
+export const phoneAttachStartInputSchema = z
+  .object({ phone: phoneSchema, locale: z.enum(REGISTRATION_LOCALES, fail('invalidOption')) })
+  .strict();
 export const phoneAttachConfirmInputSchema = z
   .object({ phone: phoneSchema, code: phoneCodeSchema })
   .strict();

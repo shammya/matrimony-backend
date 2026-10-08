@@ -1,7 +1,12 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import type { Logger } from 'pino';
 import { asciiDigits } from '../bo/phone-number.js';
-import { PHONE_CODE_LENGTH, pendingPhoneSignupSchema, type PhoneSignupInput } from '../bo/phone.js';
+import {
+  PHONE_CODE_LENGTH,
+  pendingPhoneSignupSchema,
+  type PhonePurpose,
+  type PhoneSignupInput,
+} from '../bo/phone.js';
 import { PRIVACY_VERSION, TERMS_VERSION, type Registration } from '../bo/registration.js';
 import type { Account } from '../bo/identity.js';
 import type { OneTimeTokenRepository } from '../cache/repository/one-time-token-repository.js';
@@ -12,7 +17,7 @@ import { SecretBox, digest } from '../security/secret-box.js';
 import type { CredentialService } from '../service/credential-service.js';
 import type { RegistrationService } from '../service/registration-service.js';
 import { codeMessage } from '../sms/messages.js';
-import type { SmsSender } from '../sms/sender.js';
+import type { SmsMessage, SmsSender } from '../sms/sender.js';
 import type { AuthProcess } from './auth-process.js';
 
 /** How long a code works. The text message states these minutes, so change both together. */
@@ -57,8 +62,9 @@ export type PhoneOutcome =
  *
  * - A code only proves who holds a number. After that it is our own session, exactly like any other
  *   way of signing in.
- * - Asking for a code answers the same, and sends the same, for a number that has an account and
- *   one that has not, because "this person is a member" is private on a matrimony site.
+ * - A code to log in is sent only to a number with an active account; any other number is told
+ *   PHONE_NOT_REGISTERED, so the person can register instead of waiting for a text that never comes.
+ *   That does reveal who has an account, so the same per-number and per-address limits apply first.
  * - A code works once, for five minutes, survives five wrong guesses, and asking again replaces it.
  *   Only a keyed fingerprint of it is stored. How often codes can be sent is limited per number and
  *   per agency, since each one is a cost and a way to annoy someone.
@@ -70,7 +76,7 @@ export class PhoneAuthProcess {
   constructor(
     private readonly sms: SmsSender,
     private readonly codes: Pick<PhoneCodeRepository, 'put' | 'check'>,
-    private readonly throttle: Pick<ThrottleRepository, 'hit'>,
+    private readonly throttle: Pick<ThrottleRepository, 'hit' | 'peek'>,
     private readonly tokens: Pick<OneTimeTokenRepository, 'put' | 'peek' | 'take'>,
     private readonly registrations: Pick<
       RegistrationService,
@@ -80,11 +86,25 @@ export class PhoneAuthProcess {
     private readonly auth: Pick<AuthProcess, 'startSession'>,
     private readonly box: SecretBox,
     private readonly logger: Logger,
+    /** Calling codes (without +) whose numbers may be sent a code. Bangladesh only, by default. */
+    private readonly allowedCountryCodes: readonly string[] = ['880'],
   ) {}
 
-  /** Sends a code to sign in or register with this number. */
-  async sendCode(context: PhoneContext, phone: string, locale: 'bn' | 'en') {
-    return this.send(context, 'signin', phone, locale);
+  private readonly sending = new Set<Promise<void>>();
+
+  /**
+   * Sends a code to log in or to register with this number. To log in, a code goes only to a
+   * number that has an active account, so the login page cannot be used to make the agency pay for
+   * texts to strangers; any other number gets 404 PHONE_NOT_REGISTERED (a disabled account too, so
+   * that is not revealed). To register, a code goes to any allowed number.
+   */
+  async sendCode(context: PhoneContext, phone: string, locale: 'bn' | 'en', purpose: PhonePurpose) {
+    return this.send(context, purpose, phone, locale, { onlyIfAccount: purpose === 'login' });
+  }
+
+  /** Resolves when every text handed over so far has been sent or has failed. For shutdown and tests. */
+  async idle() {
+    await Promise.allSettled([...this.sending]);
   }
 
   /** Sends a code to prove a number the signed-in account wants to add or change to. */
@@ -121,9 +141,10 @@ export class PhoneAuthProcess {
     phone: string,
     code: string,
     locale: 'bn' | 'en',
+    purpose: PhonePurpose,
     correlationId: string,
   ): Promise<PhoneOutcome> {
-    await this.checkCode(this.scope(agencyId, 'signin', phone), code);
+    await this.checkCode(this.scope(agencyId, purpose, phone), code);
     const found = await this.registrations.findByPhone(agencyId, phone);
     if (found) {
       if (found.status !== 'active') throw new AppError(403, 'ACCOUNT_NOT_ACTIVE');
@@ -218,27 +239,64 @@ export class PhoneAuthProcess {
     kind: string,
     phone: string,
     locale: 'bn' | 'en',
+    options: { onlyIfAccount?: boolean } = {},
   ): Promise<{ resendAfter: number; expiresIn: number }> {
+    // Only the number's country decides this, so it says nothing about who has an account.
+    if (!this.isAllowedCountry(phone)) throw new AppError(400, 'PHONE_COUNTRY_NOT_SUPPORTED');
     const number = digest(phone);
-    // The same answers whether or not the number has an account: only how often is limited.
+    const answer = { resendAfter: RESEND_SECONDS, expiresIn: CODE_SECONDS };
+    // The same limits whether or not the number has an account, so numbers cannot be scanned.
     await this.limit(`phone-gap:${context.agencyId}:${number}`, 1, RESEND_SECONDS);
     await this.limit(`phone-hour:${context.agencyId}:${number}`, CODES_PER_NUMBER_PER_HOUR, 3600);
-    await this.limit(`phone-day:${context.agencyId}`, CODES_PER_AGENCY_PER_DAY, 86400);
+    const day = `phone-day:${context.agencyId}`;
+    const spent = await this.throttle.peek(day);
+    if (spent.count >= CODES_PER_AGENCY_PER_DAY)
+      throw new AppError(429, 'CODE_RATE_LIMITED', { retryAfter: spent.retryAfter });
+
+    if (options.onlyIfAccount) {
+      const found = await this.registrations.findByPhone(context.agencyId, phone);
+      // No account, or one that cannot sign in: nothing is sent and nothing is paid for.
+      if (!found || found.status !== 'active') throw new AppError(404, 'PHONE_NOT_REGISTERED');
+    }
+    await this.limit(day, CODES_PER_AGENCY_PER_DAY, 86400);
 
     const scope = this.scope(context.agencyId, kind, phone);
     const code = String(randomInt(0, 10 ** PHONE_CODE_LENGTH)).padStart(PHONE_CODE_LENGTH, '0');
     await this.codes.put(scope, this.box.mac(`${scope}.${code}`), CODE_SECONDS);
+    const message = codeMessage({ to: phone, locale, agencyName: context.agencyName, code });
+    if (options.onlyIfAccount) {
+      this.sendInBackground(message);
+      return answer;
+    }
     try {
-      await this.sms.send(codeMessage({ to: phone, locale, agencyName: context.agencyName, code }));
+      await this.sms.send(message);
     } catch (error) {
-      // Never the number or the text: they are personal, and the text carries the code.
-      this.logger.error(
-        { code: 'SMS_SEND_FAILED', error: error instanceof Error ? error.name : 'unknown' },
-        'The SMS gateway did not accept a code message',
-      );
+      this.logSendFailure(error);
       throw new AppError(502, 'SMS_UNAVAILABLE');
     }
-    return { resendAfter: RESEND_SECONDS, expiresIn: CODE_SECONDS };
+    return answer;
+  }
+
+  /** True when the number's country is one that may be sent codes. */
+  private isAllowedCountry(phone: string) {
+    const digits = phone.replace(/\D/g, '');
+    return this.allowedCountryCodes.some((code) => digits.startsWith(code));
+  }
+
+  private sendInBackground(message: SmsMessage) {
+    const attempt: Promise<void> = this.sms
+      .send(message)
+      .catch((error: unknown) => this.logSendFailure(error))
+      .finally(() => this.sending.delete(attempt));
+    this.sending.add(attempt);
+  }
+
+  /** Never the number or the text: they are personal, and the text carries the code. */
+  private logSendFailure(error: unknown) {
+    this.logger.error(
+      { code: 'SMS_SEND_FAILED', error: error instanceof Error ? error.name : 'unknown' },
+      'The SMS gateway did not accept a code message',
+    );
   }
 
   private async limit(name: string, max: number, windowSeconds: number) {

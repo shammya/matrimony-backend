@@ -973,16 +973,25 @@ await test('the whole email and password journey over HTTP', async (t) => {
       numbers.set(name, `+88017${String(Math.floor(Math.random() * 1e8)).padStart(8, '0')}`);
     return numbers.get(name)!;
   };
-  const askCode = (visit: ReturnType<typeof as>, name: string) =>
-    visit('POST', '/api/v1/auth/phone/start', { body: { phone: phoneOf(name), locale: 'en' } });
+  type Purpose = 'login' | 'register';
+  /** Most tests are about the mechanics of a code, so a code to register (sent to any number) is the default. */
+  const askCode = (visit: ReturnType<typeof as>, name: string, purpose: Purpose = 'register') =>
+    visit('POST', '/api/v1/auth/phone/start', {
+      body: { phone: phoneOf(name), locale: 'en', purpose },
+    });
   /** As if a minute had passed since the last code was sent to this number. */
   const skipTheWait = (name: string) =>
     redis.del(`matrimony:throttle:phone-gap:${agency}:${digest(phoneOf(name))}`);
   const lastCodeTo = (name: string) =>
     /\b(\d{6})\b/.exec(texts.filter((m) => m.to === phoneOf(name)).at(-1)!.text)![1]!;
-  const checkCode = (visit: ReturnType<typeof as>, name: string, code = lastCodeTo(name)) =>
+  const checkCode = (
+    visit: ReturnType<typeof as>,
+    name: string,
+    code = lastCodeTo(name),
+    purpose: Purpose = 'register',
+  ) =>
     visit('POST', '/api/v1/auth/phone/verify', {
-      body: { phone: phoneOf(name), code, locale: 'en' },
+      body: { phone: phoneOf(name), code, locale: 'en', purpose },
     });
   const wrongCode = (name: string) => (lastCodeTo(name) === '000000' ? '000001' : '000000');
   const accountOfPhone = async (name: string, agencyId = agency) =>
@@ -1003,7 +1012,12 @@ await test('the whole email and password journey over HTTP', async (t) => {
     'Phone: the sign-in methods on offer include the phone when texts can be sent',
     async () => {
       const methods = await as()('GET', '/api/v1/auth/methods');
-      assert.deepEqual(methods.json(), { password: true, google: true, phone: true });
+      assert.deepEqual(methods.json(), {
+        password: true,
+        google: true,
+        phone: true,
+        phoneCountries: ['880'],
+      });
     },
   );
 
@@ -1337,7 +1351,7 @@ await test('the whole email and password journey over HTTP', async (t) => {
       const right = lastCodeTo('pscope');
       // The code does nothing at another agency.
       const elsewhere = await as('other.localhost')('POST', '/api/v1/auth/phone/verify', {
-        body: { phone: phoneOf('pscope'), code: right, locale: 'en' },
+        body: { phone: phoneOf('pscope'), code: right, locale: 'en', purpose: 'register' },
       });
       assert.equal(elsewhere.statusCode, 400);
       assert.equal(elsewhere.json().error.code, 'CODE_EXPIRED');
@@ -1355,11 +1369,11 @@ await test('the whole email and password journey over HTTP', async (t) => {
       // The same number can have its own account at the other agency.
       const there = as('other.localhost');
       await there('POST', '/api/v1/auth/phone/start', {
-        body: { phone: phoneOf('pscope'), locale: 'en' },
+        body: { phone: phoneOf('pscope'), locale: 'en', purpose: 'register' },
       });
       const code = /\b(\d{6})\b/.exec(texts.at(-1)!.text)![1]!;
       const provenThere = await there('POST', '/api/v1/auth/phone/verify', {
-        body: { phone: phoneOf('pscope'), code, locale: 'en' },
+        body: { phone: phoneOf('pscope'), code, locale: 'en', purpose: 'register' },
       });
       const createdThere = await there('POST', '/api/v1/auth/phone/signup', {
         body: { displayName: 'There', ...agree },
@@ -1376,13 +1390,13 @@ await test('the whole email and password journey over HTTP', async (t) => {
     async () => {
       const visit = as();
       const wrongSite = await visit('POST', '/api/v1/auth/phone/start', {
-        body: { phone: phoneOf('pforeign'), locale: 'en' },
+        body: { phone: phoneOf('pforeign'), locale: 'en', purpose: 'register' },
         headers: { origin: 'https://evil.example' },
       });
       assert.equal(wrongSite.statusCode, 403);
       for (const body of [
-        { phone: '12345', locale: 'en' },
-        { phone: '', locale: 'en' },
+        { phone: '12345', locale: 'en', purpose: 'register' },
+        { phone: '', locale: 'en', purpose: 'register' },
         { locale: 'en' },
         { phone: phoneOf('pforeign'), locale: 'en', role: 'admin' },
       ])
@@ -1890,6 +1904,154 @@ await test('the whole email and password journey over HTTP', async (t) => {
         headers: member.bearer,
       });
       assert.equal(changed.statusCode, 200);
+    },
+  );
+
+  // ---- who may be sent a code: only registered numbers to log in, only some countries ----
+  const dayCount = async () =>
+    Number((await redis.get(`matrimony:throttle:phone-day:${agency}`)) ?? 0);
+  /** A code to log in is sent in the background, so wait for the text before reading it. */
+  const askLoginCode = async (visit: ReturnType<typeof as>, name: string) => {
+    const response = await askCode(visit, name, 'login');
+    await phone.idle();
+    return response;
+  };
+
+  await t.test(
+    'Login by code: a registered number gets a code and logs in as its own account',
+    async () => {
+      const id = await accountWithPhone('lcode');
+      const visit = as();
+      const asked = await askLoginCode(visit, 'lcode');
+      assert.equal(asked.statusCode, 202);
+      assert.deepEqual(asked.json(), { status: 'code_sent', resendAfter: 60, expiresIn: 300 });
+      assert.equal(texts.filter((m) => m.to === phoneOf('lcode')).length, 1);
+      const back = await checkCode(visit, 'lcode', lastCodeTo('lcode'), 'login');
+      assert.equal(back.statusCode, 200);
+      assert.equal((await me(visit, back.json().accessToken)).json().id, id);
+    },
+  );
+
+  await t.test(
+    'Login by code: an unknown number is told it is not registered, and no text is sent or paid for',
+    async () => {
+      await accountWithPhone('lknown');
+      const before = await dayCount();
+      const known = await askLoginCode(as(), 'lknown');
+      assert.equal(await dayCount(), before + 1);
+      const sentToKnown = texts.length;
+
+      assert.equal(known.statusCode, 202);
+      const unknown = await askLoginCode(as(), 'lunknown');
+      // The page is told, so it can offer registration instead of waiting for a text.
+      assert.equal(unknown.statusCode, 404);
+      assert.equal(unknown.json().error.code, 'PHONE_NOT_REGISTERED');
+      assert.equal(texts.length, sentToKnown);
+      assert.equal(
+        texts.some((m) => m.to === phoneOf('lunknown')),
+        false,
+      );
+      // The agency's daily count was not used for a text that was never sent.
+      assert.equal(await dayCount(), before + 1);
+      // And nothing was stored for a code that was never sent, so no guess can ever succeed.
+      for (const purpose of ['login', 'register'] as const) {
+        const refused = await checkCode(as(), 'lunknown', '123456', purpose);
+        assert.equal(refused.statusCode, 400);
+        assert.equal(refused.json().error.code, 'CODE_EXPIRED');
+      }
+      assert.equal((await accountOfPhone('lunknown')).length, 0);
+    },
+  );
+
+  await t.test('Login by code: the same limits apply to every number, known or not', async () => {
+    await accountWithPhone('llimit');
+    for (const [name, first] of [
+      ['llimit', 202],
+      ['llimitnone', 404],
+    ] as const) {
+      assert.equal((await askLoginCode(as(), name)).statusCode, first);
+      // Asking again within the minute is refused before the account is looked at.
+      const again = await askLoginCode(as(), name);
+      assert.equal(again.statusCode, 429, name);
+      assert.equal(again.json().error.code, 'CODE_RATE_LIMITED', name);
+    }
+  });
+
+  await t.test('Login by code: a disabled account is not sent a text', async () => {
+    await accountWithPhone('ldis');
+    await admin.query(
+      `UPDATE matrimony.accounts SET status='disabled' WHERE agency_id=$1 AND phone_e164=$2`,
+      [agency, phoneOf('ldis')],
+    );
+    // A disabled account looks like an unregistered number.
+    const refused = await askLoginCode(as(), 'ldis');
+    assert.equal(refused.statusCode, 404);
+    assert.equal(refused.json().error.code, 'PHONE_NOT_REGISTERED');
+    assert.equal(
+      texts.some((m) => m.to === phoneOf('ldis')),
+      false,
+    );
+  });
+
+  await t.test(
+    'A code to log in cannot register, and a code to register is a different code',
+    async () => {
+      await accountWithPhone('lscope');
+      const visit = as();
+      await askLoginCode(visit, 'lscope');
+      const loginCode = lastCodeTo('lscope');
+      const crossed = await checkCode(visit, 'lscope', loginCode, 'register');
+      assert.equal(crossed.statusCode, 400);
+      assert.equal(crossed.json().error.code, 'CODE_EXPIRED');
+      // Its own purpose still works.
+      assert.equal((await checkCode(visit, 'lscope', loginCode, 'login')).statusCode, 200);
+    },
+  );
+
+  await t.test(
+    'Register: a new number is sent a code, and the member then has an account to log in to by code',
+    async () => {
+      const visit = as();
+      assert.equal((await askCode(visit, 'lnew', 'register')).statusCode, 202);
+      assert.equal(texts.filter((m) => m.to === phoneOf('lnew')).length, 1);
+      const proven = await checkCode(visit, 'lnew', lastCodeTo('lnew'), 'register');
+      assert.equal(proven.statusCode, 202);
+      const created = await visit('POST', '/api/v1/auth/phone/signup', {
+        body: { displayName: 'Member lnew', ...agree },
+        headers: { cookie: `matrimony-signup=${cookieFrom(proven, 'matrimony-signup')}` },
+      });
+      assert.equal(created.statusCode, 200);
+      // From now on the number is registered, so a code to log in is sent to it.
+      await skipTheWait('lnew');
+      await askLoginCode(as(), 'lnew');
+      assert.equal(texts.filter((m) => m.to === phoneOf('lnew')).length, 2);
+    },
+  );
+
+  await t.test(
+    'Countries: only Bangladeshi numbers are sent a code, for every kind of code, and nothing is counted or sent',
+    async () => {
+      const member = await phoneMember('lcountry');
+      const before = texts.length;
+      const day = await dayCount();
+      for (const foreign of ['+14155552671', '+447911123456', '+971501234567']) {
+        for (const purpose of ['register', 'login'] as const) {
+          const refused = await as()('POST', '/api/v1/auth/phone/start', {
+            body: { phone: foreign, locale: 'en', purpose },
+          });
+          assert.equal(refused.statusCode, 400, foreign + ' ' + purpose);
+          assert.equal(refused.json().error.code, 'PHONE_COUNTRY_NOT_SUPPORTED');
+        }
+      }
+      // Adding a number to an account follows the same rule.
+      const refused = await member.visit('POST', '/api/v1/me/phone/start', {
+        body: { phone: '+14155552671', locale: 'en' },
+        headers: member.bearer,
+      });
+      assert.equal(refused.statusCode, 400);
+      assert.equal(refused.json().error.code, 'PHONE_COUNTRY_NOT_SUPPORTED');
+      assert.equal(texts.length, before);
+      assert.equal(await dayCount(), day);
     },
   );
 });

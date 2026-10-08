@@ -214,7 +214,12 @@ export function registerAuthController(
   app.get(
     '/api/v1/auth/methods',
     { config: { public: true }, schema: { response: { 200: methodsResponseSchema } } },
-    async () => ({ password: true, google: google !== undefined, phone: phone !== undefined }),
+    async () => ({
+      password: true,
+      google: google !== undefined,
+      phone: phone !== undefined,
+      phoneCountries: config.SMS_ALLOWED_COUNTRIES,
+    }),
   );
   // Starts a Google sign-in or registration. Registering needs the same agreements as an email
   // registration, checked here before the person leaves. Nothing is created yet.
@@ -371,6 +376,7 @@ export function registerAuthController(
         { agencyId: req.tenant!.id, agencyName: req.tenant!.name },
         input.phone,
         input.locale,
+        input.purpose,
       );
       return reply.code(202).send({ status: 'code_sent', ...sent });
     },
@@ -392,6 +398,7 @@ export function registerAuthController(
         input.phone,
         input.code,
         input.locale,
+        input.purpose,
         req.id,
       );
       if (outcome.kind === 'signup') {

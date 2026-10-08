@@ -1,6 +1,6 @@
 # Project handoff: read this first
 
-Last updated: 8 October 2026 (late evening). If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
+Last updated: 9 October 2026. If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
 
 This file lives in the **backend** repo. The **frontend** repo has a shorter `PROJECT.md` that points here.
 
@@ -30,10 +30,10 @@ A **white-label, multi-tenant matrimony platform for Bangladeshi marriage agenci
 
 ## 3. Repositories and stack
 
-| Repo | GitHub | Stack |
-|---|---|---|
-| `backend` (this one) | `shammya/matrimony-backend` | Node 24, TypeScript (strict), Fastify, PostgreSQL 17 with row-level security, Redis (sessions and one-time codes), MongoDB (event copy, optional), `sharp` for photos, S3-compatible storage |
-| `frontend` | `shammya/launchpad-mvp` (branch `nextjs-migration`) | Next.js 16 (App Router), TypeScript, Tailwind 4, shadcn/ui, next-intl, TanStack Query, React Hook Form + Zod, Vitest, Playwright |
+| Repo                 | GitHub                                              | Stack                                                                                                                                                                                        |
+| -------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backend` (this one) | `shammya/matrimony-backend`                         | Node 24, TypeScript (strict), Fastify, PostgreSQL 17 with row-level security, Redis (sessions and one-time codes), MongoDB (event copy, optional), `sharp` for photos, S3-compatible storage |
+| `frontend`           | `shammya/launchpad-mvp` (branch `nextjs-migration`) | Next.js 16 (App Router), TypeScript, Tailwind 4, shadcn/ui, next-intl, TanStack Query, React Hook Form + Zod, Vitest, Playwright                                                             |
 
 The two repos sit **side by side** (for example `…/matromony/backend` and `…/matromony/frontend`). The frontend generates its API types from `backend/docs/api/openapi.yaml`, so they must be next to each other.
 
@@ -71,22 +71,23 @@ Status key: **Done** = confirmed by the user in a real browser (or proven by tes
 
 ### Phase 0: Foundation (complete, except the items marked)
 
-| Item | Backend | Frontend |
-|---|---|---|
-| Platform base, tenants, public config | Done | Done |
-| Public shell, signed-in shell, role guards, language switch, theming | n/a | Done |
-| i18n (bn/en parity, formats), form helpers | n/a | Done |
-| Email + password login, session restore, refresh, logout | Done (login) / Review (restore, refresh) | Done (login) |
-| Forgot / reset password | Review (user says it works) | Review |
-| Account emails (console and SMTP drivers) | Review | n/a |
-| Sign in with Google | Done | Done |
-| Sign in with a phone number and code | **Review** (built 8 Oct) | **Review** |
-| Add an email to a phone-only account (code to their own phone, then a link) | **Review** (built 8 Oct) | **Review** |
-| Password at phone registration, login with phone + password, change password with a code to the phone | **Review** (built 8 Oct) | **Review** |
-| Event log (outbox → MongoDB worker) | Review (worker never run here: no MongoDB) | n/a |
-| Local environment | Done | Done |
-| Tests and CI | n/a | Done (CI workflow written, never run on GitHub) |
-| Device sessions for the mobile app | **Planned, deliberately skipped for now** | n/a |
+| Item                                                                        | Backend                                    | Frontend                                        |
+| --------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------- |
+| Platform base, tenants, public config                                       | Done                                       | Done                                            |
+| Public shell, signed-in shell, role guards, language switch, theming        | n/a                                        | Done                                            |
+| i18n (bn/en parity, formats), form helpers                                  | n/a                                        | Done                                            |
+| Email + password login, session restore, refresh, logout                    | Done                                       | Done                                            |
+| Forgot / reset password                                                     | Done                                       | Done                                            |
+| Account emails (console and SMTP drivers)                                   | Review                                     | n/a                                             |
+| Sign in with Google                                                         | Done                                       | Done                                            |
+| Sign in with a phone number and code                                        | **Done**                                   | **Done**                                        |
+| Add an email to a phone-only account (code to their own phone, then a link) | **Done**                                   | **Done**                                        |
+| Password at phone registration, login with phone + password                 | **Done**                                   | **Done**                                        |
+| Change the password with a code to the phone                                | **Review**                                 | **Review**                                      |
+| Event log (outbox → MongoDB worker)                                         | Review (worker never run here: no MongoDB) | n/a                                             |
+| Local environment                                                           | Done                                       | Done                                            |
+| Tests and CI                                                                | n/a                                        | Done (CI workflow written, never run on GitHub) |
+| Device sessions for the mobile app                                          | **Planned, deliberately skipped for now**  | n/a                                             |
 
 ### Phase 1: Public site (complete)
 
@@ -94,12 +95,12 @@ Status key: **Done** = confirmed by the user in a real browser (or proven by tes
 
 ### Phase 2: Onboarding and approval (complete)
 
-| Feature | Backend | Frontend |
-|---|---|---|
-| 1.2 Registration (email link, Google, phone) | Done (email, Google); Review (phone) | Review |
-| 2.1 My Profile, edit requests, photos | Done | Done |
-| 4.2 Approval queue (staff review profile changes and photos) | Done | Done |
-| 4.3 Agent client management (assisted service) | Done | Done |
+| Feature                                                      | Backend | Frontend                                                   |
+| ------------------------------------------------------------ | ------- | ---------------------------------------------------------- |
+| 1.2 Registration (email link, Google, phone)                 | Done    | Done (the email link signing straight in is still untried) |
+| 2.1 My Profile, edit requests, photos                        | Done    | Done                                                       |
+| 4.2 Approval queue (staff review profile changes and photos) | Done    | Done                                                       |
+| 4.3 Agent client management (assisted service)               | Done    | Done                                                       |
 
 Not built in Phase 2: client photos, inviting staff by email.
 
@@ -131,9 +132,10 @@ The original design used an external identity provider (Auth0). On 7 October 202
 - **Three ways in, one kind of session:** email + password, Google, phone number + code. All end in the same server-side session (random id in an HttpOnly `Strict` cookie, state in Redis, 8 hours absolute), a short-lived ES256 access token kept only in browser memory, and a CSRF header on state-changing calls.
 - **Passwords:** Argon2id. **Registration by email:** a link is emailed; the account is created only when the link is opened and the person confirms; that also signs them in.
 - **Never link by email or phone alone.** A new way of proving identity is attached to an existing account only by its signed-in owner, or after the account's password.
-- **Privacy:** answers do not reveal whether an email or phone number has an account.
+- **Privacy:** answers do not reveal whether an email has an account, or whether a password login is for a known number. The one exception is asking for a login code, which says when a phone number is not registered.
 - **Google:** direct (no Firebase). A login with no account asks the person to agree to the terms on a page, and one button creates the account.
 - **Phone:** six-digit code, 5 minutes, single use, 5 guesses; one code a minute and 5 an hour per number, 2000 a day per agency. A new number gets a page for name, **password** and terms (the password is required, so the member can later log in with the number and it, with no text message, which also saves SMS cost); the member has no email at first.
+- **Who is sent a code (cost control):** a code to **log in** is sent only to a registered number (any other is told `PHONE_NOT_REGISTERED` so the page can offer registration; this reveals who has an account, a trade-off the user chose on 9 October 2026, limited by the per-number and per-address limits); a code to **register** goes to any allowed number. Only Bangladeshi numbers are sent codes by default (`SMS_ALLOWED_COUNTRIES`). Cloudflare Turnstile (free) before a code is sent, on both the login and register pages, is decided but not built; add it before launch (needs a Cloudflare account).
 - **Phone and password login:** `POST /auth/login` takes an email or a phone number (one of them) with the password; same answers and the same pause after five wrong passwords, counted per number.
 - **Choosing a new password with a code:** a signed-in member with a verified phone can set a new password with a code to that phone (`POST /me/password`); it ends every session. It is the recovery path for a phone member without an email.
 - **Adding an email to a phone-only account:** needs a code sent to the account's own phone (so a stolen session is not enough), then a link sent to the new address; opening the link stores it, verified, and signs nobody in. A password is then set with the usual forgot-password link. An existing email is never replaced.

@@ -23,18 +23,18 @@ login ──► Argon2id check ──► Redis session + cookie ──► ES256 
 every request ──► verify token signature ──► live session (Redis) ──► account read from PostgreSQL
 ```
 
-| Piece | Where |
-|---|---|
-| Password hashing (Argon2id, Node built-in) | `src/security/password-hasher.ts` |
-| Access tokens (ES256, 10 minutes) | `src/security/access-token.ts` |
-| Rules for passwords and inputs | `src/bo/credentials.ts`, `src/bo/registration.ts` |
-| Sign-in, session, refresh, sign-out | `src/process/auth-process.ts` |
-| Register, verify email, forgot and reset password | `src/process/account-access-process.ts` |
-| Checking and changing passwords | `src/service/credential-service.ts` |
-| Creating the member account | `src/service/registration-service.ts` |
-| Sessions, one-time links, counters (Redis) | `src/cache/repository/` |
-| Passwords in PostgreSQL (`account_credentials`, RLS) | `migrations/007_password_auth.sql` |
-| Email (console for development, SMTP) | `src/mail/` |
+| Piece                                                | Where                                             |
+| ---------------------------------------------------- | ------------------------------------------------- |
+| Password hashing (Argon2id, Node built-in)           | `src/security/password-hasher.ts`                 |
+| Access tokens (ES256, 10 minutes)                    | `src/security/access-token.ts`                    |
+| Rules for passwords and inputs                       | `src/bo/credentials.ts`, `src/bo/registration.ts` |
+| Sign-in, session, refresh, sign-out                  | `src/process/auth-process.ts`                     |
+| Register, verify email, forgot and reset password    | `src/process/account-access-process.ts`           |
+| Checking and changing passwords                      | `src/service/credential-service.ts`               |
+| Creating the member account                          | `src/service/registration-service.ts`             |
+| Sessions, one-time links, counters (Redis)           | `src/cache/repository/`                           |
+| Passwords in PostgreSQL (`account_credentials`, RLS) | `migrations/007_password_auth.sql`                |
+| Email (console for development, SMTP)                | `src/mail/`                                       |
 
 ## Sign-in with Google
 
@@ -50,12 +50,12 @@ callback ──► attempt used once ──► code exchange + ID token checks �
                                      as above (member created, no password, + identity + consents + event + session)
 ```
 
-| Piece | Where |
-|---|---|
-| Talking to Google (discovery, PKCE, ID token and signature checks) | `src/security/google-provider.ts` |
-| What a Google sign-in means (the rules above) | `src/process/google-auth-process.ts` |
-| Inputs and the sealed records | `src/bo/google.ts` |
-| Creating and linking identities | `src/service/registration-service.ts`, `migrations/008_external_identities.sql` |
+| Piece                                                              | Where                                                                           |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| Talking to Google (discovery, PKCE, ID token and signature checks) | `src/security/google-provider.ts`                                               |
+| What a Google sign-in means (the rules above)                      | `src/process/google-auth-process.ts`                                            |
+| Inputs and the sealed records                                      | `src/bo/google.ts`                                                              |
+| Creating and linking identities                                    | `src/service/registration-service.ts`, `migrations/008_external_identities.sql` |
 
 - **Why a password step instead of linking by email.** Linking on matching emails lets whoever controls a look-alike Google account take over an existing account (and was the classic pre-hijacking route). Our own accounts only exist for emails proven by a link, so the risk is smaller than elsewhere, but proving ownership with the password is the safe default and costs one step, once. It reuses the sign-in pause, so it cannot be used to guess passwords around it.
 - **Found by Google's id, not the email**, so a changed Google email still signs in.
@@ -74,17 +74,20 @@ ask for a code ──► SMS: six digits, 5 minutes, one use ──► check the
                                       created (no email, no password) + consents + event, then session
 ```
 
-| Piece | Where |
-|---|---|
-| Number rules (E.164, Bangladeshi forms, Bengali digits) and the inputs | `src/bo/phone.ts` |
-| What a phone sign-in means (limits, codes, outcomes) | `src/process/phone-auth-process.ts` |
-| Codes in Redis (atomic check, wrong-guess count) | `src/cache/repository/phone-code-repository.ts` |
-| Sending (interface, development console sender, the text) | `src/sms/sender.ts`, `src/sms/messages.ts` |
-| Accounts by number, creating one, adding a number | `src/service/registration-service.ts`, `migrations/009_phone_sign_in.sql` |
+| Piece                                                                  | Where                                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Number rules (E.164, Bangladeshi forms, Bengali digits) and the inputs | `src/bo/phone.ts`                                                         |
+| What a phone sign-in means (limits, codes, outcomes)                   | `src/process/phone-auth-process.ts`                                       |
+| Codes in Redis (atomic check, wrong-guess count)                       | `src/cache/repository/phone-code-repository.ts`                           |
+| Sending (interface, development console sender, the text)              | `src/sms/sender.ts`, `src/sms/messages.ts`                                |
+| Accounts by number, creating one, adding a number                      | `src/service/registration-service.ts`, `migrations/009_phone_sign_in.sql` |
 
-- **Same answer for every number.** Asking for a code sends one and answers 202 whether or not the number has an account, because "this person is a member" is private on a matrimony site. Only after a right code do the paths differ, and then the person has proved they hold the number.
+- **Same answer for every number.** Asking for a code answers 202 with the same body whether or not the number has an account, because "this person is a member" is private on a matrimony site (what is actually sent differs for a login code, below, but the person asking cannot see that). Only after a right code do the paths differ, and then the person has proved they hold the number.
 - **The code.** Six digits from a cryptographic generator, stored only as an HMAC keyed by the session encryption key (a plain hash of six digits could be reversed in a moment if Redis leaked). It works once, for 5 minutes, survives 4 wrong guesses (the 5th cancels it), and asking again replaces it. The check is one atomic Redis script, so many guesses at once cannot get more tries.
-- **Cost and abuse limits.** One code a minute and 5 an hour per number, 2000 a day per agency, and 10 requests per 10 minutes per address. Every text costs money, and an open "send" button is how people get flooded with texts.
+- **Cost and abuse limits.** One code a minute and 5 an hour per number, 2000 a day per agency, and 10 requests per 10 minutes per address. Every text costs money, and an open "send" button is how people get flooded with texts, or the agency's money is spent on texts to strangers.
+- **A code to log in is sent only to a registered number.** The request says its purpose, `login` or `register`. For `login` a code goes only to a number with an active account; for any other number nothing is sent, nothing is stored and the agency's daily count is not used, so typing strangers' numbers into the login page costs nothing. Such a number is told `404 PHONE_NOT_REGISTERED` (a disabled account too), so the page can say "this number is not registered, please register" (decided 9 October 2026, as most sites do; it does reveal who has an account, so the one-code-a-minute, 5-an-hour and per-address limits apply before the check, and a human check is still to add). Logging in with a phone number and a password still gives one answer for a wrong password, an unknown number and an account with no password. A new member uses `register`, which sends to any allowed number because there is no account yet. The two kinds of code are separate: a login code cannot register, and a register code cannot log in. Registering still sends a text to any number, so the countries rule and a human check are the defences there.
+- **Only some countries.** Only numbers whose calling code is in `SMS_ALLOWED_COUNTRIES` are sent a code (Bangladesh, `880`, by default), for every kind of code including adding a number to an account. The check depends only on the number's prefix, so it reveals nothing about accounts, and it happens before anything is counted or sent. A member abroad needs the country allowed in the setting. SMS pumping (running up the bill by asking for codes to premium or foreign numbers) is the usual way this is abused.
+- **Still to add before launch (decided 9 October 2026):** a human check, Cloudflare Turnstile (free), before a code is sent, on both the login and the register page: on login it stops scripts scanning which numbers are members, on register it stops them running up the SMS bill. It needs a Cloudflare account and keys, so it is not built.
 - **Never attached by number alone.** An existing account gets a number only from its signed-in owner, who proves it with a code (`/me/phone/start` and `/me/phone/verify`). Codes are scoped to the account that asked, so a code meant for adding cannot sign anyone in, and one sent for one account cannot add the number to another. A number already used by another account is refused after the proof (409 `PHONE_IN_USE`).
 - **Phone-only members** have no email and no password. They cannot use "forgot password". They can add an email later only once there is a flow for it (not built).
 - **Recycled numbers.** A phone company can give a number to someone new. A phone-only account has no second factor against that; an account with an email and password is only reachable by the number once its owner added it. Worth the reviewer's attention.
@@ -117,22 +120,22 @@ Added 8 October 2026, after a text message on every login proved too costly and 
 
 ## What it protects against
 
-| Threat | Control | Evidence |
-|---|---|---|
-| Stolen password database | Argon2id, per-hash salt, parameters stored in the hash and upgraded on sign-in; passwords never logged or echoed | `password-hasher.test.ts`, `auth-flow.test.ts` |
-| Guessing passwords | 5 wrong passwords pause that email for 15 minutes (also for emails with no account); 10 sign-ins a minute per client address | `auth.test.ts`, `auth-flow.test.ts` |
-| Finding out who is a member (private on a matrimony site) | Same answer, status and shape for known and unknown emails at sign-in, register and forgot-password; the same hashing work in both branches; emails are sent in the background so timing does not tell | `credential-service.test.ts`, `account-access.test.ts`, `auth-flow.test.ts` |
-| Claiming someone else's email | The account does not exist until the emailed link is opened, and the password is chosen by whoever registered, so a link can only be used by the owner of the inbox | `account-access.test.ts` |
-| Reusing or guessing links | 256-bit tokens, only hashed or sealed copies stored, single use (atomic `GETDEL`), 24 hours for registration and 1 hour for reset, cancelled by a newer request, bound to the agency and to the purpose | `auth-state.test.ts`, `account-access.test.ts` |
-| Tokens from another agency, or a forged token | Host-resolved agency, signature, algorithm (ES256 only), issuer, audience, type, scope, expiry, and the live session must name the same account and agency | `access-token.test.ts`, `auth.test.ts` |
-| Roles from a token or the client | The role is read from PostgreSQL on every request; registration can only create a member; extra request fields are refused | `credentials.test.ts`, `auth-http.test.ts` |
-| Cross-site requests | Same-origin check on every sign-in, registration and reset call; `SameSite=Strict` cookie; CSRF token on refresh and sign-out | `auth-http.test.ts` |
-| A stolen or old session | Ends at its absolute expiry; sign-out, password reset and a disabled account end it at once; the oldest sessions of an account are signed out beyond 10 | `auth-flow.test.ts`, `auth-state.test.ts` |
-| Header injection and spoofed links | Email links are built only from the validated agency host; the sender address cannot hold a line break | `auth-http.test.ts`, `security.test.ts` |
-| Leaks in logs and events | Events hold ids only; failures log a code, never an address, link or password | `account-access.test.ts`, `auth-flow.test.ts` |
-| A look-alike or unconfirmed Google account | Only an email Google has confirmed counts; linking to an existing account needs its password; the link step shares the sign-in pause; the identity is Google's id | `google-auth.test.ts`, `google-provider.test.ts`, `integration/auth-flow.test.ts` |
-| A forged, replayed or foreign Google callback | State, nonce and PKCE; the attempt is single use and bound to the agency and callback address; the ID token's issuer, audience, expiry and signature are checked | `google-provider.test.ts`, `google-auth.test.ts` |
-| Tenant mix-ups | Row-level security on `account_credentials`; every query is by agency; the same email at two agencies is two accounts | `integration/registration.test.ts` |
+| Threat                                                    | Control                                                                                                                                                                                                 | Evidence                                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Stolen password database                                  | Argon2id, per-hash salt, parameters stored in the hash and upgraded on sign-in; passwords never logged or echoed                                                                                        | `password-hasher.test.ts`, `auth-flow.test.ts`                                    |
+| Guessing passwords                                        | 5 wrong passwords pause that email for 15 minutes (also for emails with no account); 10 sign-ins a minute per client address                                                                            | `auth.test.ts`, `auth-flow.test.ts`                                               |
+| Finding out who is a member (private on a matrimony site) | Same answer, status and shape for known and unknown emails at sign-in, register and forgot-password; the same hashing work in both branches; emails are sent in the background so timing does not tell  | `credential-service.test.ts`, `account-access.test.ts`, `auth-flow.test.ts`       |
+| Claiming someone else's email                             | The account does not exist until the emailed link is opened, and the password is chosen by whoever registered, so a link can only be used by the owner of the inbox                                     | `account-access.test.ts`                                                          |
+| Reusing or guessing links                                 | 256-bit tokens, only hashed or sealed copies stored, single use (atomic `GETDEL`), 24 hours for registration and 1 hour for reset, cancelled by a newer request, bound to the agency and to the purpose | `auth-state.test.ts`, `account-access.test.ts`                                    |
+| Tokens from another agency, or a forged token             | Host-resolved agency, signature, algorithm (ES256 only), issuer, audience, type, scope, expiry, and the live session must name the same account and agency                                              | `access-token.test.ts`, `auth.test.ts`                                            |
+| Roles from a token or the client                          | The role is read from PostgreSQL on every request; registration can only create a member; extra request fields are refused                                                                              | `credentials.test.ts`, `auth-http.test.ts`                                        |
+| Cross-site requests                                       | Same-origin check on every sign-in, registration and reset call; `SameSite=Strict` cookie; CSRF token on refresh and sign-out                                                                           | `auth-http.test.ts`                                                               |
+| A stolen or old session                                   | Ends at its absolute expiry; sign-out, password reset and a disabled account end it at once; the oldest sessions of an account are signed out beyond 10                                                 | `auth-flow.test.ts`, `auth-state.test.ts`                                         |
+| Header injection and spoofed links                        | Email links are built only from the validated agency host; the sender address cannot hold a line break                                                                                                  | `auth-http.test.ts`, `security.test.ts`                                           |
+| Leaks in logs and events                                  | Events hold ids only; failures log a code, never an address, link or password                                                                                                                           | `account-access.test.ts`, `auth-flow.test.ts`                                     |
+| A look-alike or unconfirmed Google account                | Only an email Google has confirmed counts; linking to an existing account needs its password; the link step shares the sign-in pause; the identity is Google's id                                       | `google-auth.test.ts`, `google-provider.test.ts`, `integration/auth-flow.test.ts` |
+| A forged, replayed or foreign Google callback             | State, nonce and PKCE; the attempt is single use and bound to the agency and callback address; the ID token's issuer, audience, expiry and signature are checked                                        | `google-provider.test.ts`, `google-auth.test.ts`                                  |
+| Tenant mix-ups                                            | Row-level security on `account_credentials`; every query is by agency; the same email at two agencies is two accounts                                                                                   | `integration/registration.test.ts`                                                |
 
 ## Defaults chosen without the product owner (please confirm)
 

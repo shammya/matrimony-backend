@@ -142,6 +142,15 @@ async function build(
           },
         }),
   });
+  // Asking for and checking a code both say why (to log in or to register). Most tests are about
+  // something else, so they get 'register' unless they say otherwise (or leave it out on purpose).
+  const withPurpose = (url: string, body: unknown) =>
+    /^\/api\/v1\/auth\/phone\/(start|verify)$/.test(url) &&
+    body !== null &&
+    typeof body === 'object' &&
+    !('purpose' in body)
+      ? { purpose: 'register', ...body }
+      : body;
   const send = (
     method: 'GET' | 'POST',
     url: string,
@@ -151,7 +160,7 @@ async function build(
     app.inject({
       method,
       url,
-      ...(body === undefined ? {} : { payload: body as object }),
+      ...(body === undefined ? {} : { payload: withPurpose(url, body) as object }),
       headers: { host: 'localhost', origin, ...headers },
     });
   return { app, calls, send };
@@ -211,10 +220,11 @@ await test('asking for a code reads the number as E.164 and answers 202 without 
   assert.equal(response.statusCode, 202);
   assert.deepEqual(response.json(), { status: 'code_sent', resendAfter: 60, expiresIn: 300 });
   assert.equal(cookiesOf(response), '');
-  assert.deepEqual(calls.sendCode![0]!.slice(0, 3), [
+  assert.deepEqual(calls.sendCode![0]!.slice(0, 4), [
     { agencyId: agency, agencyName: 'MSBD' },
     number,
     'bn',
+    'register',
   ]);
 });
 
@@ -273,7 +283,7 @@ await test('a right code for an account signs in like a login: tokens in the bod
   assert.match(cookies, new RegExp(`matrimony-session=${sessionId}`));
   assert.match(cookies, /HttpOnly/);
   assert.match(cookies, /SameSite=Strict/);
-  assert.deepEqual(calls.verifyCode![0]!.slice(0, 4), [agency, number, '123456', 'en']);
+  assert.deepEqual(calls.verifyCode![0]!.slice(0, 5), [agency, number, '123456', 'en', 'register']);
 });
 
 await test('a right code for a number with no account is 202 with the signup cookie and no session', async (t) => {
@@ -780,4 +790,73 @@ await test('changing the password: refusals are safe errors that keep their code
     assert.equal(response.statusCode, status);
     assert.equal(response.json().error.code, code);
   }
+});
+
+await test('asking for and checking a code both need to say why: to log in or to register', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const base = { phone: number, locale: 'en' };
+  for (const purpose of [undefined, 'signin', 'admin', ''])
+    assert.equal(
+      (await send('POST', '/api/v1/auth/phone/start', { ...base, purpose })).statusCode,
+      400,
+      String(purpose),
+    );
+  assert.equal(
+    (
+      await send('POST', '/api/v1/auth/phone/verify', {
+        ...base,
+        code: '123456',
+        purpose: undefined,
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(calls.sendCode!.length, 0);
+  assert.equal(calls.verifyCode!.length, 0);
+
+  const login = await send('POST', '/api/v1/auth/phone/start', { ...base, purpose: 'login' });
+  assert.equal(login.statusCode, 202);
+  assert.equal(calls.sendCode![0]![3], 'login');
+  await send('POST', '/api/v1/auth/phone/verify', { ...base, code: '123456', purpose: 'login' });
+  assert.equal(calls.verifyCode![0]![4], 'login');
+});
+
+await test('adding a number to an account does not take a purpose, since it is always for that account', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const response = await send(
+    'POST',
+    '/api/v1/me/phone/start',
+    { phone: number, locale: 'en' },
+    bearer,
+  );
+  assert.equal(response.statusCode, 202);
+  const refused = await send(
+    'POST',
+    '/api/v1/me/phone/start',
+    { phone: number, locale: 'en', purpose: 'login' },
+    bearer,
+  );
+  assert.equal(refused.statusCode, 400);
+  assert.equal(calls.sendAttachCode!.length, 1);
+});
+
+await test('a country that is not allowed is a plain 400 with a stable code', async (t) => {
+  const { app, send } = await build({
+    fail: { sendCode: new AppError(400, 'PHONE_COUNTRY_NOT_SUPPORTED') },
+  });
+  t.after(() => app.close());
+  const response = await send('POST', '/api/v1/auth/phone/start', {
+    phone: '+14155552671',
+    locale: 'en',
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error.code, 'PHONE_COUNTRY_NOT_SUPPORTED');
+});
+
+await test('the methods tell the page which countries may be sent a code', async (t) => {
+  const { app, send } = await build();
+  t.after(() => app.close());
+  assert.deepEqual((await send('GET', '/api/v1/auth/methods')).json().phoneCountries, ['880']);
 });

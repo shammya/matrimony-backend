@@ -648,6 +648,7 @@ await test('the page is told which ways of signing in are on', async (t) => {
       password: true,
       google: true,
       phone: false,
+      phoneCountries: ['880'],
     },
   );
   const off = await build({ google: false });
@@ -658,6 +659,7 @@ await test('the page is told which ways of signing in are on', async (t) => {
       password: true,
       google: false,
       phone: false,
+      phoneCountries: ['880'],
     },
   );
 });

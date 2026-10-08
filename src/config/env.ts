@@ -60,6 +60,14 @@ const schema = z
     // backend's terminal, for development only. Left out, phone sign-in is not offered. A real gateway
     // plugs into the SmsSender boundary; production refuses `console`.
     SMS_DRIVER: z.enum(['console']).optional(),
+    // The countries whose numbers may be sent a code, as calling codes without the plus. Every text
+    // costs money and an open "send" button is a way to run up the bill, so only Bangladesh (880) is
+    // on by default. Add a code (for example `880,971`) to let members living abroad register.
+    SMS_ALLOWED_COUNTRIES: z
+      .string()
+      .regex(/^[0-9]{1,4}(,[0-9]{1,4})*$/)
+      .default('880')
+      .transform((value) => value.split(',')),
     // Sign-in with Google. Both or neither: without them the Google button is not offered. Register
     // each agency's exact callback address (https://<host>/api/v1/auth/google/callback) with Google.
     GOOGLE_CLIENT_ID: z.string().min(1).optional(),

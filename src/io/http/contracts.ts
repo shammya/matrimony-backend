@@ -44,11 +44,13 @@ export const authorizationResponseSchema = {
 export const methodsResponseSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['password', 'google', 'phone'],
+  required: ['password', 'google', 'phone', 'phoneCountries'],
   properties: {
     password: { type: 'boolean' },
     google: { type: 'boolean' },
     phone: { type: 'boolean' },
+    /** Calling codes (without +) whose numbers may be sent a code. */
+    phoneCountries: { type: 'array', items: { type: 'string' } },
   },
 } as const;
 /** The account a Google sign-in is waiting to be linked to. */

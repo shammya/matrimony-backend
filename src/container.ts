@@ -120,6 +120,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
             auth,
             box,
             logger,
+            config.SMS_ALLOWED_COUNTRIES,
           )
         : undefined;
     const access = new AccountAccessProcess(
@@ -190,6 +191,7 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       },
       close: async () => {
         await access.idle();
+        await phone?.idle();
         redis.disconnect();
         await db.close();
       },
