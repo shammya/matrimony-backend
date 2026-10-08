@@ -14,6 +14,10 @@ export class CredentialDbService {
     return this.db.transaction(agencyId, (tx) => this.repository.byEmail(tx, agencyId, email));
   }
 
+  byPhone(agencyId: string, phone: string) {
+    return this.db.transaction(agencyId, (tx) => this.repository.byPhone(tx, agencyId, phone));
+  }
+
   byId(agencyId: string, accountId: string) {
     return this.db.transaction(agencyId, (tx) => this.repository.byId(tx, agencyId, accountId));
   }

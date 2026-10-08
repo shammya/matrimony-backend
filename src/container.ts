@@ -107,6 +107,21 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       new RegistrationDbService(db, new RegistrationRepository(), new EventRepository()),
     );
     const oneTimeTokens = new OneTimeTokenRepository(redis);
+    // Phone sign-in is on only when a way to send the codes is configured.
+    const phone =
+      config.SMS_DRIVER === 'console'
+        ? new PhoneAuthProcess(
+            new ConsoleSmsSender((text) => process.stdout.write(`${text}\n`)),
+            new PhoneCodeRepository(redis),
+            throttle,
+            oneTimeTokens,
+            registrations,
+            credentials,
+            auth,
+            box,
+            logger,
+          )
+        : undefined;
     const access = new AccountAccessProcess(
       registrations,
       credentials,
@@ -117,21 +132,8 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
       createMailer(config),
       box,
       logger,
+      phone,
     );
-    // Phone sign-in is on only when a way to send the codes is configured.
-    const phone =
-      config.SMS_DRIVER === 'console'
-        ? new PhoneAuthProcess(
-            new ConsoleSmsSender((text) => process.stdout.write(`${text}\n`)),
-            new PhoneCodeRepository(redis),
-            throttle,
-            oneTimeTokens,
-            registrations,
-            auth,
-            box,
-            logger,
-          )
-        : undefined;
     // Sign-in with Google is on only when both settings are given.
     const google =
       config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET

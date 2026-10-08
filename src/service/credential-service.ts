@@ -17,7 +17,7 @@ export class CredentialService {
   constructor(
     private readonly db: Pick<
       CredentialDbService,
-      'byEmail' | 'byId' | 'rehash' | 'setPasswordWithEvent'
+      'byEmail' | 'byPhone' | 'byId' | 'rehash' | 'setPasswordWithEvent'
     >,
     private readonly hasher: Pick<
       PasswordHasher,
@@ -42,7 +42,19 @@ export class CredentialService {
 
   /** The account when the email and password are right. Otherwise 401, or 403 for a disabled account. */
   async verify(agencyId: string, email: string, password: string): Promise<Account> {
-    const found = await this.db.byEmail(agencyId, email);
+    return this.check(agencyId, await this.db.byEmail(agencyId, email), password);
+  }
+
+  /** The same for a phone number that a code has proved, and the password of its account. */
+  async verifyPhone(agencyId: string, phone: string, password: string): Promise<Account> {
+    return this.check(agencyId, await this.db.byPhone(agencyId, phone), password);
+  }
+
+  private async check(
+    agencyId: string,
+    found: CredentialRecord | null,
+    password: string,
+  ): Promise<Account> {
     if (!found?.passwordHash || found.status === 'invited') {
       await this.hasher.verifyAgainstNothing(password);
       throw new AppError(401, 'INVALID_CREDENTIALS');

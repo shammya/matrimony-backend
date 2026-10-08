@@ -1,6 +1,6 @@
 # Project handoff: read this first
 
-Last updated: 8 October 2026. If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
+Last updated: 8 October 2026 (late evening). If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
 
 This file lives in the **backend** repo. The **frontend** repo has a shorter `PROJECT.md` that points here.
 
@@ -81,6 +81,8 @@ Status key: **Done** = confirmed by the user in a real browser (or proven by tes
 | Account emails (console and SMTP drivers) | Review | n/a |
 | Sign in with Google | Done | Done |
 | Sign in with a phone number and code | **Review** (built 8 Oct) | **Review** |
+| Add an email to a phone-only account (code to their own phone, then a link) | **Review** (built 8 Oct) | **Review** |
+| Password at phone registration, login with phone + password, change password with a code to the phone | **Review** (built 8 Oct) | **Review** |
 | Event log (outbox → MongoDB worker) | Review (worker never run here: no MongoDB) | n/a |
 | Local environment | Done | Done |
 | Tests and CI | n/a | Done (CI workflow written, never run on GitHub) |
@@ -131,10 +133,13 @@ The original design used an external identity provider (Auth0). On 7 October 202
 - **Never link by email or phone alone.** A new way of proving identity is attached to an existing account only by its signed-in owner, or after the account's password.
 - **Privacy:** answers do not reveal whether an email or phone number has an account.
 - **Google:** direct (no Firebase). A login with no account asks the person to agree to the terms on a page, and one button creates the account.
-- **Phone:** six-digit code, 5 minutes, single use, 5 guesses; one code a minute and 5 an hour per number, 2000 a day per agency. A new number gets a page for name and terms; the member then has no email and no password.
+- **Phone:** six-digit code, 5 minutes, single use, 5 guesses; one code a minute and 5 an hour per number, 2000 a day per agency. A new number gets a page for name, **password** and terms (the password is required, so the member can later log in with the number and it, with no text message, which also saves SMS cost); the member has no email at first.
+- **Phone and password login:** `POST /auth/login` takes an email or a phone number (one of them) with the password; same answers and the same pause after five wrong passwords, counted per number.
+- **Choosing a new password with a code:** a signed-in member with a verified phone can set a new password with a code to that phone (`POST /me/password`); it ends every session. It is the recovery path for a phone member without an email.
+- **Adding an email to a phone-only account:** needs a code sent to the account's own phone (so a stolen session is not enough), then a link sent to the new address; opening the link stores it, verified, and signs nobody in. A password is then set with the usual forgot-password link. An existing email is never replaced.
 - **Development senders:** emails and texts are printed in the backend terminal (`MAIL_DRIVER=console`, `SMS_DRIVER=console`). The configuration refuses both in production.
 
-Not built in authentication: a real SMS gateway and a real email service, the production Google consent screen, adding an email or password to a phone-only account, changing a password while signed in, a list of devices, two-factor for staff, device sessions for the mobile app, and the **security review**.
+Not built in authentication: a real SMS gateway and a real email service, the production Google consent screen, changing an existing email, changing a password while signed in, a list of devices, two-factor for staff, device sessions for the mobile app, and the **security review**.
 
 ## 7. Decisions still open (the user or the client must answer)
 

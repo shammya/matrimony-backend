@@ -10,6 +10,7 @@ import { AppError } from '../src/exception/app-error.js';
 import type { MailMessage } from '../src/mail/mailer.js';
 import { AccountAccessProcess, type AccessContext } from '../src/process/account-access-process.js';
 import { SecretBox } from '../src/security/secret-box.js';
+import type { SignInMethods } from '../src/db/raw/repository/registration-repository.js';
 import type { VerifiedRegistration } from '../src/service/registration-service.js';
 import { account, agency, otherAgency } from './fixtures.js';
 
@@ -32,7 +33,28 @@ const code = (status: number, name: string) => (error: unknown) =>
 /** The token inside the first link in a message. */
 const tokenIn = (message: MailMessage) => /token=([A-Za-z0-9_-]{43})/.exec(message.text)?.[1] ?? '';
 
-function setup(options: { registered?: string[]; record?: Partial<CredentialRecord> | null } = {}) {
+const phoneOnly: SignInMethods = {
+  email: null,
+  emailVerified: false,
+  phone: '+8801712345678',
+  hasPassword: false,
+  google: false,
+};
+const RIGHT_CODE = '123456';
+
+function setup(
+  options: {
+    registered?: string[];
+    record?: Partial<CredentialRecord> | null;
+    methods?: SignInMethods | null;
+    noPhone?: boolean;
+  } = {},
+) {
+  const methods = options.methods === undefined ? phoneOnly : options.methods;
+  const attached: { accountId: string; email: string; correlationId: string }[] = [];
+  let attachResult: 'attached' | 'taken' | 'unavailable' = 'attached';
+  const reauthSent: { to: string; locale: string }[] = [];
+  const reauthChecked: { phone: string; code: string }[] = [];
   const registered = new Set(options.registered ?? []);
   const mails: MailMessage[] = [];
   const created: { agencyId: string; verified: VerifiedRegistration; correlationId: string }[] = [];
@@ -88,6 +110,11 @@ function setup(options: { registered?: string[]; record?: Partial<CredentialReco
         created.push({ agencyId, verified, correlationId });
         return registered.has(verified.email) ? { created: false } : { created: true, account };
       },
+      signInMethods: async () => methods,
+      attachEmail: async (_agencyId, accountId, email, correlationId) => {
+        attached.push({ accountId, email, correlationId });
+        return attachResult;
+      },
     },
     {
       hash: async (password) => {
@@ -122,6 +149,18 @@ function setup(options: { registered?: string[]; record?: Partial<CredentialReco
     },
     new SecretBox('ab'.repeat(32)),
     pino({ level: 'info' }, { write: (line: string) => logs.push(line) }),
+    options.noPhone
+      ? undefined
+      : {
+          sendReauthCode: async (_context, _account, phone, locale) => {
+            reauthSent.push({ to: phone, locale });
+            return { resendAfter: 60, expiresIn: 300 };
+          },
+          checkReauthCode: async (_agencyId, _account, phone, given) => {
+            reauthChecked.push({ phone, code: given });
+            if (given !== RIGHT_CODE) throw new AppError(400, 'CODE_INVALID');
+          },
+        },
   );
   return {
     process,
@@ -134,6 +173,10 @@ function setup(options: { registered?: string[]; record?: Partial<CredentialReco
     stored,
     logs,
     counters,
+    attached,
+    reauthSent,
+    reauthChecked,
+    attachWill: (result: typeof attachResult) => void (attachResult = result),
     hashCalls: () => hashCalls,
     failMail: () => {
       mailFails = true;
@@ -445,4 +488,255 @@ await test('registering and resetting are limited separately', async () => {
   for (let i = 0; i < 3; i++) await f.settle(f.process.startRegistration(context, input));
   await f.settle(f.process.requestPasswordReset(context, 'rahim@example.com'));
   assert.equal(f.mails.length, 4);
+});
+
+const addEmail = { email: 'nina@example.com', code: RIGHT_CODE, locale: 'en' as const };
+
+await test('adding an email starts with a code to the account’s own phone, never to a number from the request', async () => {
+  const f = setup();
+  const sent = await f.process.sendReauthCode(context, account, 'bn');
+  assert.deepEqual(sent, { resendAfter: 60, expiresIn: 300 });
+  assert.deepEqual(f.reauthSent, [{ to: '+8801712345678', locale: 'bn' }]);
+});
+
+await test('an account that has an email, or no phone, or no phone service, cannot start adding one', async () => {
+  const hasEmail = setup({ methods: { ...phoneOnly, email: 'a@example.com' } });
+  await assert.rejects(
+    () => hasEmail.process.startAddEmail(context, account, addEmail),
+    code(409, 'EMAIL_ALREADY_SET'),
+  );
+  const noPhone = setup({ methods: { ...phoneOnly, phone: null } });
+  await assert.rejects(
+    () => noPhone.process.sendReauthCode(context, account, 'en'),
+    code(409, 'PHONE_REQUIRED'),
+  );
+  await assert.rejects(
+    () => noPhone.process.startAddEmail(context, account, addEmail),
+    code(409, 'PHONE_REQUIRED'),
+  );
+  const unknown = setup({ methods: null });
+  await assert.rejects(
+    () => unknown.process.sendReauthCode(context, account, 'en'),
+    code(409, 'PHONE_REQUIRED'),
+  );
+  const off = setup({ noPhone: true });
+  await assert.rejects(
+    () => off.process.sendReauthCode(context, account, 'en'),
+    code(404, 'PHONE_NOT_CONFIGURED'),
+  );
+  await assert.rejects(
+    () => off.process.startAddEmail(context, account, addEmail),
+    code(404, 'PHONE_NOT_CONFIGURED'),
+  );
+  for (const f of [hasEmail, noPhone, unknown, off]) assert.equal(f.mails.length, 0);
+});
+
+await test('with the right code a link is emailed to the new address, and nothing is added yet', async () => {
+  const f = setup();
+  await f.settle(f.process.startAddEmail(context, account, addEmail));
+  assert.deepEqual(f.reauthChecked, [{ phone: '+8801712345678', code: RIGHT_CODE }]);
+  assert.equal(f.mails.length, 1);
+  assert.equal(f.mails[0]!.to, 'nina@example.com');
+  assert.match(
+    f.mails[0]!.text,
+    /https:\/\/marriage\.example\/en\/confirm-email\?token=[A-Za-z0-9_-]{43}/,
+  );
+  assert.match(f.mails[0]!.text, /1 hour/);
+  assert.equal(f.attached.length, 0);
+  // What is kept is sealed: the account and the address cannot be read from it.
+  const everything = JSON.stringify([...f.stored]);
+  assert.equal(everything.includes('nina@example.com'), false);
+  assert.equal(everything.includes(account.id), false);
+});
+
+await test('a wrong code sends no email and keeps nothing', async () => {
+  const f = setup();
+  await assert.rejects(
+    () => f.process.startAddEmail(context, account, { ...addEmail, code: '000000' }),
+    code(400, 'CODE_INVALID'),
+  );
+  await f.process.idle();
+  assert.equal(f.mails.length, 0);
+  assert.equal(f.stored.size, 0);
+  assert.equal(f.attached.length, 0);
+});
+
+await test('an address that already has an account gets a notice instead of a link, and the answer is the same', async () => {
+  const f = setup({ registered: ['nina@example.com'] });
+  const answer = await f.settle(f.process.startAddEmail(context, account, addEmail));
+  assert.equal(answer, undefined);
+  assert.equal(f.mails.length, 1);
+  assert.equal(f.mails[0]!.to, 'nina@example.com');
+  assert.equal(tokenIn(f.mails[0]!), '');
+  assert.match(f.mails[0]!.text, /already belongs to an account/);
+  assert.match(f.mails[0]!.text, /https:\/\/marriage\.example\/en\/login/);
+  assert.equal(f.stored.size, 0);
+});
+
+await test('one address is sent three of these emails an hour, known or not', async () => {
+  const f = setup();
+  for (let i = 0; i < 3; i++) await f.settle(f.process.startAddEmail(context, account, addEmail));
+  await assert.rejects(
+    () => f.process.startAddEmail(context, account, addEmail),
+    (error) =>
+      error instanceof AppError && error.status === 429 && error.code === 'EMAIL_RATE_LIMITED',
+  );
+  assert.equal(f.mails.length, 3);
+});
+
+await test('asking again cancels the earlier link, so only the newest adds the address', async () => {
+  const f = setup();
+  await f.settle(f.process.startAddEmail(context, account, addEmail));
+  await f.settle(
+    f.process.startAddEmail(context, account, { ...addEmail, email: 'other@example.com' }),
+  );
+  const [first, second] = f.mails.map(tokenIn);
+  await assert.rejects(
+    () => f.process.confirmAddEmail(agency, first!, 'r'),
+    code(400, 'LINK_INVALID_OR_EXPIRED'),
+  );
+  await f.process.confirmAddEmail(agency, second!, 'req-c');
+  assert.deepEqual(f.attached, [
+    { accountId: account.id, email: 'other@example.com', correlationId: 'req-c' },
+  ]);
+});
+
+await test('opening the link adds the address to the account that asked, once', async () => {
+  const f = setup();
+  await f.settle(f.process.startAddEmail(context, account, addEmail));
+  const token = tokenIn(f.mails[0]!);
+  await f.process.confirmAddEmail(agency, token, 'req-9');
+  assert.deepEqual(f.attached, [
+    { accountId: account.id, email: 'nina@example.com', correlationId: 'req-9' },
+  ]);
+  await assert.rejects(
+    () => f.process.confirmAddEmail(agency, token, 'r'),
+    code(400, 'LINK_INVALID_OR_EXPIRED'),
+  );
+  assert.equal(f.attached.length, 1);
+});
+
+await test('a made-up link, or one used at another agency, adds nothing and is not used up by trying it', async () => {
+  const f = setup();
+  await f.settle(f.process.startAddEmail(context, account, addEmail));
+  const token = tokenIn(f.mails[0]!);
+  await assert.rejects(
+    () => f.process.confirmAddEmail(agency, 'z'.repeat(43), 'r'),
+    code(400, 'LINK_INVALID_OR_EXPIRED'),
+  );
+  await assert.rejects(
+    () => f.process.confirmAddEmail(otherAgency, token, 'r'),
+    code(400, 'LINK_INVALID_OR_EXPIRED'),
+  );
+  assert.equal(f.attached.length, 0);
+  await f.process.confirmAddEmail(agency, token, 'r');
+  assert.equal(f.attached.length, 1);
+});
+
+await test('a link for an address that another account took meanwhile, or for an account that changed, is a 409', async () => {
+  const f = setup();
+  await f.settle(f.process.startAddEmail(context, account, addEmail));
+  f.attachWill('taken');
+  await assert.rejects(
+    () => f.process.confirmAddEmail(agency, tokenIn(f.mails[0]!), 'r'),
+    code(409, 'EMAIL_IN_USE'),
+  );
+  f.attachWill('unavailable');
+  await f.settle(f.process.startAddEmail(context, account, addEmail));
+  await assert.rejects(
+    () => f.process.confirmAddEmail(agency, tokenIn(f.mails[1]!), 'r'),
+    code(409, 'EMAIL_ALREADY_SET'),
+  );
+});
+
+await test('a link in a email that cannot be delivered logs the failure without the address or the link', async () => {
+  const f = setup();
+  f.failMail();
+  await f.settle(f.process.startAddEmail(context, account, addEmail));
+  const written = f.logs.join('\n');
+  assert.match(written, /MAIL_SEND_FAILED/);
+  assert.equal(written.includes('nina@example.com'), false);
+  assert.equal(written.includes('confirm-email'), false);
+});
+
+const newPassword = { code: RIGHT_CODE, password: 'a brand new strong password' };
+
+await test('the proof code can be sent to an account that has an email too, since it also serves a new password', async () => {
+  const f = setup({ methods: { ...phoneOnly, email: 'a@example.com' } });
+  await f.process.sendReauthCode(context, account, 'en');
+  assert.deepEqual(f.reauthSent, [{ to: '+8801712345678', locale: 'en' }]);
+});
+
+await test('a new password with the right code is stored hashed, ends every session, and tells the owner by email', async () => {
+  const f = setup({ methods: { ...phoneOnly, email: 'a@example.com' } });
+  await f.settle(f.process.changePassword(context, account, newPassword, 'req-pw'));
+  assert.deepEqual(f.reauthChecked, [{ phone: '+8801712345678', code: RIGHT_CODE }]);
+  assert.equal(f.passwordSets.length, 1);
+  assert.equal(f.passwordSets[0]!.accountId, account.id);
+  assert.match(f.passwordSets[0]!.hash, /^\$argon2id/);
+  assert.equal(f.passwordSets[0]!.hash.includes('brand new'), false);
+  assert.deepEqual(f.removedSessions, [account.id]);
+  assert.equal(f.mails.length, 1);
+  assert.equal(f.mails[0]!.to, 'a@example.com');
+  assert.match(f.mails[0]!.text, /এইমাত্র বদলানো হয়েছে/);
+  // The link back is in the language of the account (the fixture account reads Bengali).
+  assert.match(f.mails[0]!.text, /https:\/\/marriage\.example\/bn\/forgot-password/);
+});
+
+await test('a phone-only member changes the password the same way, with no email to tell', async () => {
+  const f = setup();
+  await f.settle(f.process.changePassword(context, account, newPassword, 'r'));
+  assert.equal(f.passwordSets.length, 1);
+  assert.deepEqual(f.removedSessions, [account.id]);
+  assert.equal(f.mails.length, 0);
+});
+
+await test('a wrong code changes nothing and keeps every session', async () => {
+  const f = setup();
+  await assert.rejects(
+    () => f.process.changePassword(context, account, { ...newPassword, code: '000000' }, 'r'),
+    code(400, 'CODE_INVALID'),
+  );
+  assert.equal(f.passwordSets.length, 0);
+  assert.deepEqual(f.removedSessions, []);
+});
+
+await test('a password that is the email or the number is refused before the code is spent', async () => {
+  const f = setup({ methods: { ...phoneOnly, email: 'nina.phone@example.com' } });
+  for (const [password, field] of [
+    ['nina.phone@example.com', 'sameAsEmail'],
+    ['nina.phone', 'sameAsEmail'],
+    ['01712345678', 'sameAsPhone'],
+    ['+8801712345678', 'sameAsPhone'],
+  ] as const)
+    await assert.rejects(
+      () => f.process.changePassword(context, account, { code: RIGHT_CODE, password }, 'r'),
+      (error) =>
+        error instanceof AppError &&
+        error.status === 400 &&
+        JSON.stringify(error.details) ===
+          JSON.stringify({ fields: [{ path: 'password', code: field }] }),
+      password,
+    );
+  assert.equal(f.reauthChecked.length, 0);
+  assert.equal(f.passwordSets.length, 0);
+});
+
+await test('changing the password needs a phone, a phone service, and an active account', async () => {
+  const noPhone = setup({ methods: { ...phoneOnly, phone: null } });
+  await assert.rejects(
+    () => noPhone.process.changePassword(context, account, newPassword, 'r'),
+    code(409, 'PHONE_REQUIRED'),
+  );
+  const off = setup({ noPhone: true });
+  await assert.rejects(
+    () => off.process.changePassword(context, account, newPassword, 'r'),
+    code(404, 'PHONE_NOT_CONFIGURED'),
+  );
+  const disabled = setup({ record: { status: 'disabled' } });
+  await assert.rejects(
+    () => disabled.process.changePassword(context, account, newPassword, 'r'),
+    code(403, 'ACCOUNT_NOT_ACTIVE'),
+  );
+  assert.deepEqual(disabled.removedSessions, []);
 });

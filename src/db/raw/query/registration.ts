@@ -34,6 +34,11 @@ export const registrationQueries = {
   setPhone: `UPDATE matrimony.accounts SET phone_e164 = $3, phone_verified_at = now()
  WHERE agency_id = $1 AND id = $2::uuid AND status = 'active'`,
 
+  // Adds the proven email to an active account that has none. Never replaces an address.
+  // $1 agency, $2 account, $3 email.
+  setEmail: `UPDATE matrimony.accounts SET email = $3, email_verified_at = now()
+ WHERE agency_id = $1 AND id = $2::uuid AND status = 'active' AND email IS NULL`,
+
   // What an account can sign in with, for its account settings. $1 agency, $2 account.
   signInMethods: `SELECT a.email, a.email_verified_at IS NOT NULL AS email_verified,
  a.phone_e164, a.phone_verified_at IS NOT NULL AS phone_verified,

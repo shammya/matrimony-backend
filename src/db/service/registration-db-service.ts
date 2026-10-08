@@ -26,6 +26,7 @@ export interface RegistrationUnit {
   ): Promise<Account | null>;
   phoneTakenByOther(agencyId: string, phone: string, accountId: string): Promise<boolean>;
   setPhone(agencyId: string, accountId: string, phone: string): Promise<boolean>;
+  setEmail(agencyId: string, accountId: string, email: string): Promise<boolean>;
   createCredential(agencyId: string, accountId: string, hash: string): Promise<void>;
   linkIdentity(
     agencyId: string,
@@ -88,6 +89,7 @@ export class RegistrationDbService {
       phoneTakenByOther: (agencyId, phone, accountId) =>
         repo.phoneTakenByOther(tx, agencyId, phone, accountId),
       setPhone: (agencyId, accountId, phone) => repo.setPhone(tx, agencyId, accountId, phone),
+      setEmail: (agencyId, accountId, email) => repo.setEmail(tx, agencyId, accountId, email),
       createCredential: (agencyId, accountId, hash) =>
         repo.createCredential(tx, agencyId, accountId, hash),
       linkIdentity: (agencyId, accountId, identity) =>

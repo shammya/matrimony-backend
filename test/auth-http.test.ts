@@ -58,6 +58,10 @@ async function build(
     verifyEmail: [],
     requestPasswordReset: [],
     resetPassword: [],
+    sendReauthCode: [],
+    startAddEmail: [],
+    confirmAddEmail: [],
+    changePassword: [],
     googleStart: [],
     googleComplete: [],
     googlePending: [],
@@ -146,6 +150,22 @@ async function build(
         'resetPassword',
         undefined,
       ) as AppDependencies['access']['resetPassword'],
+      sendReauthCode: track('sendReauthCode', {
+        resendAfter: 60,
+        expiresIn: 300,
+      }) as unknown as AppDependencies['access']['sendReauthCode'],
+      startAddEmail: track(
+        'startAddEmail',
+        undefined,
+      ) as AppDependencies['access']['startAddEmail'],
+      confirmAddEmail: track(
+        'confirmAddEmail',
+        undefined,
+      ) as AppDependencies['access']['confirmAddEmail'],
+      changePassword: track(
+        'changePassword',
+        undefined,
+      ) as AppDependencies['access']['changePassword'],
     },
   });
   const post = (url: string, body?: unknown, headers: Record<string, string> = {}) =>

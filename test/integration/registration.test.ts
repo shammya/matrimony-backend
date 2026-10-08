@@ -430,11 +430,13 @@ await test('email and password accounts on real PostgreSQL', async (t) => {
           denied(`UPDATE matrimony.accounts SET role='admin' WHERE id=$1`, [created.account.id]),
         /permission denied/,
       );
-      await assert.rejects(
-        () =>
-          denied(`UPDATE matrimony.accounts SET email='x@y.com' WHERE id=$1`, [created.account.id]),
-        /permission denied/,
-      );
+      // Only the phone and email columns may be written (migrations 009 and 010); the rest of the
+      // account row, such as who it is and whether it is active, cannot be changed by the application.
+      for (const column of ["status='disabled'", "display_name='Someone else'", "locale='en'"])
+        await assert.rejects(
+          () => denied(`UPDATE matrimony.accounts SET ${column} WHERE id=$1`, [created.account.id]),
+          /permission denied/,
+        );
       // Asked for with the wrong agency context, the row is simply not there.
       const other = await db.transaction(otherAgency, (tx) =>
         tx.query(
@@ -690,6 +692,161 @@ await test('email and password accounts on real PostgreSQL', async (t) => {
           ),
         /accounts_email_verified_needs_email|check constraint/,
       );
+    },
+  );
+
+  // ---- phone numbers and adding an email, on the real database ----
+  const phone = (tail: string) =>
+    `+88017${run.replace(/\D/g, '').padEnd(4, '3').slice(0, 4)}${tail.padStart(4, '0')}`;
+  const passwordHashFor = () => hasher.hash('a strong phone password');
+  const phoneMember = async (tail: string) => {
+    const result = await registrations.registerPhone(
+      agency,
+      { phone: phone(tail), displayName: `Phone ${tail}`, passwordHash: await passwordHashFor() },
+      registration,
+      'r',
+    );
+    assert.ok(result.created);
+    return result.account;
+  };
+  const stored = async (id: string) =>
+    (
+      await admin.query(
+        `SELECT email, email_verified_at, phone_e164, phone_verified_at, status FROM matrimony.accounts WHERE id=$1`,
+        [id],
+      )
+    ).rows[0];
+
+  await t.test(
+    'a member who registers with a phone has a verified number, a password and no email',
+    async () => {
+      const member = await phoneMember('1001');
+      const row = await stored(member.id);
+      assert.equal(row.phone_e164, phone('1001'));
+      assert.notEqual(row.phone_verified_at, null);
+      assert.equal(row.email, null);
+      assert.equal(row.status, 'active');
+      const found = await registrations.findByPhone(agency, phone('1001'));
+      assert.equal(found?.account.id, member.id);
+      // The same number at the other agency is a different, unrelated lookup.
+      assert.equal(await registrations.findByPhone(otherAgency, phone('1001')), null);
+      const none = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.account_credentials WHERE account_id=$1',
+        [member.id],
+      );
+      // The password was stored in the same transaction as the account.
+      assert.equal(none.rows[0].n, 1);
+      // The same number never gets a second account.
+      assert.deepEqual(
+        await registrations.registerPhone(
+          agency,
+          { phone: phone('1001'), displayName: 'Again', passwordHash: await passwordHashFor() },
+          registration,
+          'r',
+        ),
+        { created: false },
+      );
+    },
+  );
+
+  await t.test(
+    'adding an email stores it as verified, once, and never replaces or steals one',
+    async () => {
+      const member = await phoneMember('1002');
+      const address = email('addmail');
+      assert.equal(await registrations.attachEmail(agency, member.id, address, 'r'), 'attached');
+      const row = await stored(member.id);
+      assert.equal(row.email, address);
+      assert.notEqual(row.email_verified_at, null);
+
+      // An account that has an email keeps it: a second address is refused and the first stays.
+      assert.equal(
+        await registrations.attachEmail(agency, member.id, email('replace'), 'r'),
+        'unavailable',
+      );
+      assert.equal((await stored(member.id)).email, address);
+
+      // An address that another account uses is never added to a second one.
+      const other = await phoneMember('1003');
+      assert.equal(await registrations.attachEmail(agency, other.id, address, 'r'), 'taken');
+      assert.equal((await stored(other.id)).email, null);
+
+      // The same address is free at another agency's accounts (the lookup is per agency).
+      assert.equal(await registrations.emailRegistered(otherAgency, address), false);
+
+      const events = await admin.query(
+        `SELECT count(*)::int AS n FROM matrimony.event_outbox WHERE event->>'type'='auth.email_added' AND event->>'subjectId'=$1`,
+        [member.id],
+      );
+      assert.equal(events.rows[0].n, 1);
+    },
+  );
+
+  await t.test(
+    'a disabled account cannot get an email added, and two accounts racing for one address end with one',
+    async () => {
+      const disabled = await phoneMember('1004');
+      await admin.query(`UPDATE matrimony.accounts SET status='disabled' WHERE id=$1`, [
+        disabled.id,
+      ]);
+      assert.equal(
+        await registrations.attachEmail(agency, disabled.id, email('disabled'), 'r'),
+        'unavailable',
+      );
+      assert.equal((await stored(disabled.id)).email, null);
+
+      const a = await phoneMember('1005');
+      const b = await phoneMember('1006');
+      const results = await Promise.all([
+        registrations.attachEmail(agency, a.id, email('phone-race'), 'race-a'),
+        registrations.attachEmail(agency, b.id, email('phone-race'), 'race-b'),
+      ]);
+      assert.deepEqual([...results].sort(), ['attached', 'taken']);
+      const holders = await admin.query(
+        'SELECT count(*)::int AS n FROM matrimony.accounts WHERE email=$1',
+        [email('phone-race')],
+      );
+      assert.equal(holders.rows[0].n, 1);
+    },
+  );
+
+  await t.test(
+    'adding a number to an account, and sign-in methods read from the real tables',
+    async () => {
+      const member = await phoneMember('1007');
+      const withEmail = await registrations.createVerified(agency, await verified('methods'), 'r');
+      assert.ok(withEmail.created);
+      assert.equal(
+        await registrations.attachPhone(agency, withEmail.account.id, phone('1008'), 'r'),
+        'attached',
+      );
+      assert.equal(
+        await registrations.attachPhone(agency, withEmail.account.id, phone('1007'), 'r'),
+        'taken',
+      );
+      assert.equal(
+        await registrations.attachPhone(agency, member.id, phone('1007'), 'r'),
+        'attached',
+      );
+
+      const methods = await registrations.signInMethods(agency, withEmail.account.id);
+      assert.deepEqual(methods, {
+        email: email('methods'),
+        emailVerified: true,
+        phone: phone('1008'),
+        hasPassword: true,
+        google: false,
+      });
+      const phoneOnly = await registrations.signInMethods(agency, member.id);
+      assert.deepEqual(phoneOnly, {
+        email: null,
+        emailVerified: false,
+        phone: phone('1007'),
+        hasPassword: true,
+        google: false,
+      });
+      // Another agency cannot read an account's sign-in methods.
+      assert.equal(await registrations.signInMethods(otherAgency, member.id), null);
     },
   );
 });

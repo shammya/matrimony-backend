@@ -4,6 +4,11 @@ export const credentialQueries = {
  FROM matrimony.accounts a
  LEFT JOIN matrimony.account_credentials c ON c.agency_id = a.agency_id AND c.account_id = a.id
  WHERE a.agency_id = $1 AND a.email = $2`,
+  // $1 agency, $2 phone (E.164). Only a number a code proved can be used to sign in. Any status.
+  byPhone: `SELECT a.id, a.agency_id, a.role, a.display_name, a.email, a.status, a.locale, c.password_hash
+ FROM matrimony.accounts a
+ LEFT JOIN matrimony.account_credentials c ON c.agency_id = a.agency_id AND c.account_id = a.id
+ WHERE a.agency_id = $1 AND a.phone_e164 = $2 AND a.phone_verified_at IS NOT NULL`,
   byId: `SELECT a.id, a.agency_id, a.role, a.display_name, a.email, a.status, a.locale, c.password_hash
  FROM matrimony.accounts a
  LEFT JOIN matrimony.account_credentials c ON c.agency_id = a.agency_id AND c.account_id = a.id

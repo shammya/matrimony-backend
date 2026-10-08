@@ -1,13 +1,22 @@
 import { randomBytes } from 'node:crypto';
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import {
+  pendingAddEmailSchema,
+  type AddEmailStartInput,
+  type ChangePasswordInput,
+} from '../bo/account-email.js';
+import type { Account } from '../bo/identity.js';
+import { passwordMatchesEmail } from '../bo/credentials.js';
 import { toRegistration, registrationSchema, type RegistrationInput } from '../bo/registration.js';
 import type { OneTimeTokenRepository } from '../cache/repository/one-time-token-repository.js';
 import type { SessionRepository } from '../cache/repository/session-repository.js';
 import type { ThrottleRepository } from '../cache/repository/throttle-repository.js';
 import { AppError } from '../exception/app-error.js';
 import {
+  addEmailEmail,
   alreadyRegisteredEmail,
+  emailInUseNotice,
   passwordChangedEmail,
   passwordResetEmail,
   verificationEmail,
@@ -16,12 +25,15 @@ import {
 import type { Mailer, MailMessage } from '../mail/mailer.js';
 import { SecretBox, digest } from '../security/secret-box.js';
 import type { AuthProcess } from './auth-process.js';
+import { passwordIsPhone, type PhoneAuthProcess } from './phone-auth-process.js';
 import type { CredentialService } from '../service/credential-service.js';
 import type { RegistrationService } from '../service/registration-service.js';
 
 /** How long an emailed link works. The emails state these hours, so change both together. */
 const REGISTRATION_LINK_SECONDS = 24 * 3600;
 const RESET_LINK_SECONDS = 3600;
+/** The link that adds an email to an account is shorter-lived: it is a sensitive change. */
+const ADD_EMAIL_LINK_SECONDS = 3600;
 /** Emails one address can be sent per hour for each purpose, whether or not it has an account. */
 const EMAILS_PER_HOUR = 3;
 const HOUR = 3600;
@@ -56,7 +68,10 @@ export class AccountAccessProcess {
   private readonly sending = new Set<Promise<void>>();
 
   constructor(
-    private readonly registrations: Pick<RegistrationService, 'emailRegistered' | 'createVerified'>,
+    private readonly registrations: Pick<
+      RegistrationService,
+      'emailRegistered' | 'createVerified' | 'signInMethods' | 'attachEmail'
+    >,
     private readonly credentials: Pick<
       CredentialService,
       'hash' | 'findByEmail' | 'findById' | 'setPassword'
@@ -68,6 +83,8 @@ export class AccountAccessProcess {
     private readonly mailer: Mailer,
     private readonly box: SecretBox,
     private readonly logger: Logger,
+    /** Undefined when phone codes are not set up; adding an email then is not possible. */
+    private readonly phone?: Pick<PhoneAuthProcess, 'sendReauthCode' | 'checkReauthCode'>,
   ) {}
 
   /**
@@ -125,6 +142,121 @@ export class AccountAccessProcess {
     const created = await this.registrations.createVerified(agencyId, pending, correlationId);
     if (!created.created) throw new AppError(400, 'LINK_INVALID_OR_EXPIRED');
     return this.auth.startSession(agencyId, created.account, correlationId);
+  }
+
+  /**
+   * Step one of a sensitive change (adding an email, choosing a new password): a code to the
+   * account's own phone, to prove it is the owner and not someone holding a stolen session.
+   */
+  async sendReauthCode(context: AccessContext, account: Account, locale: 'bn' | 'en') {
+    const phone = this.phone ?? this.noPhone();
+    const methods = await this.registrations.signInMethods(context.agencyId, account.id);
+    if (!methods?.phone) throw new AppError(409, 'PHONE_REQUIRED');
+    return phone.sendReauthCode(
+      { agencyId: context.agencyId, agencyName: context.agencyName },
+      account,
+      methods.phone,
+      locale,
+    );
+  }
+
+  /**
+   * Step two: with the code, a link is sent to the address. Nothing is added yet: the address is
+   * only proven, and added, when the link is opened. The answer is the same whether or not the
+   * address already belongs to an account; that account's owner is told by email instead.
+   */
+  async startAddEmail(context: AccessContext, account: Account, input: AddEmailStartInput) {
+    const phone = this.phone ?? this.noPhone();
+    const methods = await this.registrations.signInMethods(context.agencyId, account.id);
+    if (methods?.email) throw new AppError(409, 'EMAIL_ALREADY_SET');
+    if (!methods?.phone) throw new AppError(409, 'PHONE_REQUIRED');
+    // The code only the owner of the phone has. A wrong one is counted and cancels the code.
+    await phone.checkReauthCode(context.agencyId, account, methods.phone, input.code);
+
+    await this.limitEmails(`add-email-mail:${context.agencyId}:${digest(input.email)}`);
+    const common = { to: input.email, locale: input.locale, agencyName: context.agencyName };
+    if (await this.registrations.emailRegistered(context.agencyId, input.email)) {
+      this.sendInBackground(
+        emailInUseNotice({ ...common, signInLink: this.link(context, input.locale, 'login') }),
+      );
+      return;
+    }
+    const token = newToken();
+    const key = tokenKey(context.agencyId, token);
+    // Asking again cancels the earlier link of this account, so only the newest works.
+    await this.tokens.put(
+      'email-add',
+      account.id,
+      key,
+      this.box.seal(JSON.stringify({ accountId: account.id, email: input.email }), key),
+      ADD_EMAIL_LINK_SECONDS,
+    );
+    this.sendInBackground(
+      addEmailEmail({ ...common, link: this.link(context, input.locale, 'confirm-email', token) }),
+    );
+  }
+
+  /**
+   * Step three: the link was opened and confirmed, so the address is proven and added to the
+   * account that asked. It signs nobody in: the link may be opened on another device.
+   */
+  async confirmAddEmail(agencyId: string, token: string, correlationId: string) {
+    const key = tokenKey(agencyId, token);
+    const sealed = await this.tokens.take('email-add', key);
+    if (!sealed) throw new AppError(400, 'LINK_INVALID_OR_EXPIRED');
+    const pending = pendingAddEmailSchema.parse(JSON.parse(this.box.open(sealed, key)));
+    const result = await this.registrations.attachEmail(
+      agencyId,
+      pending.accountId,
+      pending.email,
+      correlationId,
+    );
+    if (result === 'taken') throw new AppError(409, 'EMAIL_IN_USE');
+    if (result === 'unavailable') throw new AppError(409, 'EMAIL_ALREADY_SET');
+  }
+
+  /**
+   * Sets a new password for the signed-in account, proved by a code sent to its own phone. Every
+   * session of the account ends, as for any password reset, and the owner is told by email when
+   * there is one.
+   */
+  async changePassword(
+    context: AccessContext,
+    account: Account,
+    input: ChangePasswordInput,
+    correlationId: string,
+  ) {
+    const phone = this.phone ?? this.noPhone();
+    const methods = await this.registrations.signInMethods(context.agencyId, account.id);
+    if (!methods?.phone) throw new AppError(409, 'PHONE_REQUIRED');
+    // A password that is the email or the number is among the first things guessed.
+    const same = methods.email && passwordMatchesEmail(input.password, methods.email);
+    if (same || passwordIsPhone(input.password, methods.phone))
+      throw new AppError(400, 'INVALID_REQUEST', {
+        fields: [{ path: 'password', code: same ? 'sameAsEmail' : 'sameAsPhone' }],
+      });
+    await phone.checkReauthCode(context.agencyId, account, methods.phone, input.code);
+
+    const hash = await this.credentials.hash(input.password);
+    if (!(await this.credentials.setPassword(context.agencyId, account.id, hash, correlationId)))
+      throw new AppError(403, 'ACCOUNT_NOT_ACTIVE');
+    await this.sessions.removeAll(account.id);
+    if (methods.email) {
+      const locale =
+        (await this.credentials.findById(context.agencyId, account.id))?.locale ?? 'en';
+      this.sendInBackground(
+        passwordChangedEmail({
+          to: methods.email,
+          locale,
+          agencyName: context.agencyName,
+          resetLink: this.link(context, locale, 'forgot-password'),
+        }),
+      );
+    }
+  }
+
+  private noPhone(): never {
+    throw new AppError(404, 'PHONE_NOT_CONFIGURED');
   }
 
   /** Emails a reset link when the address has an account; either way the answer is the same. */

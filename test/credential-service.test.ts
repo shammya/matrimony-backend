@@ -29,6 +29,7 @@ async function setup(record: Partial<CredentialRecord> | null, passwordHash?: st
   const service = new CredentialService(
     {
       byEmail: async () => stored,
+      byPhone: async () => stored,
       byId: async () => stored,
       rehash: async (_agency, _id, next, expected) => {
         if (rehashFails) throw new Error('database down');
@@ -152,4 +153,43 @@ await test('setting a password records an event in the same call, with ids only'
 await test('a disabled account cannot have its password set', async () => {
   const { service } = await setup({ status: 'disabled' });
   assert.equal(await service.setPassword(agency, account.id, '$argon2id$v=19$x', 'req'), false);
+});
+
+await test('the right phone number and password give the account', async () => {
+  const { service } = await setup({});
+  assert.deepEqual(
+    await service.verifyPhone(agency, '+8801712345678', 'the right password'),
+    account,
+  );
+});
+
+await test('an unknown number, a number with no password and a wrong password all fail the same way, with the same work done', async () => {
+  const cases: [string, Awaited<ReturnType<typeof setup>>][] = [
+    ['unknown', await setup(null)],
+    ['no password', await setup({}, null)],
+    ['wrong', await setup({})],
+  ];
+  for (const [name, { service, dummyChecks }] of cases) {
+    await assert.rejects(
+      () => service.verifyPhone(agency, '+8801712345678', 'a wrong password'),
+      (error) =>
+        error instanceof AppError && error.status === 401 && error.code === 'INVALID_CREDENTIALS',
+      name,
+    );
+    // The two cases without a hash still pay for a hash check, so timing shows nothing.
+    if (name !== 'wrong') assert.equal(dummyChecks(), 1, name);
+  }
+});
+
+await test('a disabled account is refused by phone only after the right password, so strangers learn nothing', async () => {
+  const { service } = await setup({ status: 'disabled' });
+  await assert.rejects(
+    () => service.verifyPhone(agency, '+8801712345678', 'the wrong one'),
+    (error) => error instanceof AppError && error.status === 401,
+  );
+  await assert.rejects(
+    () => service.verifyPhone(agency, '+8801712345678', 'the right password'),
+    (error) =>
+      error instanceof AppError && error.status === 403 && error.code === 'ACCOUNT_NOT_ACTIVE',
+  );
 });

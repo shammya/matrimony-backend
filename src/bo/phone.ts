@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { newPasswordSchema } from './credentials.js';
+import { asciiDigits, phoneSchema } from './phone-number.js';
 import { REGISTRATION_LOCALES } from './registration.js';
 
 /**
@@ -8,47 +10,10 @@ import { REGISTRATION_LOCALES } from './registration.js';
  */
 const fail = (key: string) => ({ error: key });
 
+export { normalizePhone, phoneSchema } from './phone-number.js';
+
 /** Digits in a code. Six is what people expect from an SMS code, and it is short enough to type. */
 export const PHONE_CODE_LENGTH = 6;
-
-/** Bengali digits (০-৯) are typed on a Bengali keyboard; the code and numbers use 0-9. */
-function asciiDigits(value: string): string {
-  return value.replace(/[০-৯]/g, (digit) => String('০১২৩৪৫৬৭৮৯'.indexOf(digit)));
-}
-
-/**
- * The number as the accounts table stores it: E.164 (`+` and the country code, no spaces).
- * Bangladeshi mobile numbers may be written `01712345678`, `8801712345678` or `+8801712345678`.
- * Anything else needs the `+` and its country code, so a number is never guessed to belong to a
- * country.
- */
-export function normalizePhone(input: string): string | null {
-  const typed = asciiDigits(input).replace(/[\s().-]/g, '');
-  let e164: string;
-  if (typed.startsWith('+')) e164 = typed;
-  else if (typed.startsWith('00')) e164 = `+${typed.slice(2)}`;
-  else if (/^01[3-9][0-9]{8}$/.test(typed)) e164 = `+88${typed}`;
-  else if (/^8801[3-9][0-9]{8}$/.test(typed)) e164 = `+${typed}`;
-  else return null;
-  if (!/^\+[1-9][0-9]{7,14}$/.test(e164)) return null;
-  // Bangladesh has fixed mobile numbers: +880, then 1, then an operator digit 3-9 and 8 more digits.
-  if (e164.startsWith('+880') && !/^\+8801[3-9][0-9]{8}$/.test(e164)) return null;
-  return e164;
-}
-
-export const phoneSchema = z
-  .string(fail('required'))
-  .trim()
-  .min(1, fail('required'))
-  .max(40, fail('tooLong'))
-  .transform((value, ctx) => {
-    const phone = normalizePhone(value);
-    if (!phone) {
-      ctx.addIssue({ code: 'custom', message: 'invalidPhone' });
-      return z.NEVER;
-    }
-    return phone;
-  });
 
 export const phoneCodeSchema = z
   .string(fail('required'))
@@ -78,7 +43,8 @@ export type PhoneVerifyInput = z.output<typeof phoneVerifyInputSchema>;
 
 /**
  * What a person gives to create the account after proving their number. The number comes from the
- * proof, never from this request. The name is theirs to give, because a phone does not carry one.
+ * proof, never from this request. The name is theirs to give, because a phone does not carry one,
+ * and so is the password, which lets them log in later without another text message.
  */
 export const phoneSignupInputSchema = z
   .object({
@@ -87,6 +53,8 @@ export const phoneSignupInputSchema = z
       .trim()
       .min(1, fail('required'))
       .max(100, fail('tooLong')),
+    /** Chosen now, so the member can log in later with the number and this password, with no text. */
+    password: newPasswordSchema,
     acceptTerms: z.boolean(fail('invalid')).default(false),
     acceptPrivacy: z.boolean(fail('invalid')).default(false),
     onBehalfOfOther: z.boolean(fail('invalid')).default(false),

@@ -74,6 +74,10 @@ export const unusedAccess = {
   verifyEmail: unused,
   requestPasswordReset: unused,
   resetPassword: unused,
+  sendReauthCode: unused,
+  startAddEmail: unused,
+  confirmAddEmail: unused,
+  changePassword: unused,
 };
 export const authFor = (authenticate: (agencyId: string, token: string) => Promise<Account>) => ({
   authenticate,

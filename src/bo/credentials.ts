@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { phoneSchema } from './phone-number.js';
 
 /**
  * What a person types to register, sign in or recover access, and the rules for a password.
@@ -90,9 +91,14 @@ export function passwordMatchesEmail(password: string, email: string): boolean {
   return lower === email || lower === email.split('@')[0];
 }
 
+/**
+ * Signing in with a password: an email, or a phone number, with the password. Exactly one of
+ * the two. Which account it is, and whether it has a password, is never told apart in the answer.
+ */
 export const loginInputSchema = z
   .object({
-    email: emailSchema,
+    email: emailSchema.optional(),
+    phone: phoneSchema.optional(),
     // No strength rules here: an older, weaker password must still be able to sign in.
     password: z
       .string(fail('required'))
@@ -100,7 +106,13 @@ export const loginInputSchema = z
       .max(LOGIN_PASSWORD_MAX_LENGTH, fail('tooLong'))
       .transform(normalizePassword),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.email === undefined && value.phone === undefined)
+      ctx.addIssue({ code: 'custom', message: 'required', path: ['email'] });
+    if (value.email !== undefined && value.phone !== undefined)
+      ctx.addIssue({ code: 'custom', message: 'invalid', path: ['phone'] });
+  });
 export type LoginInput = z.output<typeof loginInputSchema>;
 
 /** The one-time secret in an emailed link: 32 random bytes, base64url. */

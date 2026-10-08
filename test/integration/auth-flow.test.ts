@@ -143,6 +143,7 @@ await test('the whole email and password journey over HTTP', async (t) => {
     throttle,
     oneTimeTokens,
     registrations,
+    credentials,
     auth,
     new SecretBox(config.SESSION_ENCRYPTION_KEY),
     pino({ level: 'silent' }),
@@ -161,6 +162,7 @@ await test('the whole email and password journey over HTTP', async (t) => {
     },
     new SecretBox(config.SESSION_ENCRYPTION_KEY),
     pino({ level: 'silent' }),
+    phone,
   );
   const app = await buildApp({
     config,
@@ -993,7 +995,9 @@ await test('the whole email and password journey over HTTP', async (t) => {
         [agencyId, phoneOf(name)],
       )
     ).rows;
-  const agree = { acceptTerms: true, acceptPrivacy: true };
+  // What registering with a phone asks for besides the name: the password, and the agreements.
+  const phonePassword = 'a strong phone password';
+  const agree = { acceptTerms: true, acceptPrivacy: true, password: phonePassword };
 
   await t.test(
     'Phone: the sign-in methods on offer include the phone when texts can be sent',
@@ -1051,7 +1055,7 @@ await test('the whole email and password journey over HTTP', async (t) => {
       assert.equal(rows[0].email, null);
       assert.notEqual(rows[0].phone_verified_at, null);
       assert.equal(rows[0].status, 'active');
-      assert.equal(rows[0].passwords, 0);
+      assert.equal(rows[0].passwords, 1);
       assert.equal(rows[0].consents, 2);
       const events = await admin.query(
         `SELECT event->>'type' AS type FROM matrimony.event_outbox WHERE event->>'subjectId'=$1 ORDER BY 1`,
@@ -1389,6 +1393,503 @@ await test('the whole email and password journey over HTTP', async (t) => {
       );
       const noCookie = await visit('GET', '/api/v1/auth/phone/signup');
       assert.equal(noCookie.statusCode, 400);
+    },
+  );
+
+  // ---- adding an email to a phone-only account ----
+  /** A member who registered with a phone number alone: no email, no password. */
+  const phoneMember = async (name: string) => {
+    const visit = as();
+    await askCode(visit, name);
+    const proven = await checkCode(visit, name);
+    const created = await visit('POST', '/api/v1/auth/phone/signup', {
+      body: { displayName: `Member ${name}`, ...agree },
+      headers: { cookie: `matrimony-signup=${cookieFrom(proven, 'matrimony-signup')}` },
+    });
+    assert.equal(created.statusCode, 200);
+    return {
+      visit,
+      bearer: { authorization: `Bearer ${created.json().accessToken}` },
+      id: (await accountOfPhone(name))[0].id as string,
+    };
+  };
+  const startEmail = async (
+    member: Awaited<ReturnType<typeof phoneMember>>,
+    name: string,
+    address: string,
+    code?: string,
+  ) => {
+    await skipTheWait(name);
+    assert.equal(
+      (
+        await member.visit('POST', '/api/v1/me/reauth/start', {
+          body: { locale: 'en' },
+          headers: member.bearer,
+        })
+      ).statusCode,
+      202,
+    );
+    return member.visit('POST', '/api/v1/me/email/start', {
+      body: { email: address, code: code ?? lastCodeTo(name), locale: 'en' },
+      headers: member.bearer,
+    });
+  };
+  const accountRow = async (id: string) =>
+    (
+      await admin.query(
+        `SELECT email, email_verified_at, status,
+                (SELECT count(*)::int FROM matrimony.account_credentials c WHERE c.account_id=a.id) AS passwords
+         FROM matrimony.accounts a WHERE a.id=$1`,
+        [id],
+      )
+    ).rows[0];
+
+  await t.test(
+    'Email: a phone-only member proves it is them, confirms the address by its link, and has an email',
+    async () => {
+      const member = await phoneMember('eadd');
+      const address = email('eadd');
+      const started = await startEmail(member, 'eadd', address);
+      assert.equal(started.statusCode, 202);
+      assert.deepEqual(started.json(), { status: 'email_sent' });
+      await settle();
+      // Only the link is sent, to the new address, and nothing is added until it is opened.
+      const link = lastMail(address);
+      assert.match(link.text, /\/en\/confirm-email\?token=[A-Za-z0-9_-]{43}/);
+      assert.equal((await accountRow(member.id)).email, null);
+
+      const confirmed = await as()('POST', '/api/v1/auth/email/confirm', {
+        body: { token: tokenIn(link) },
+      });
+      assert.equal(confirmed.statusCode, 200);
+      assert.deepEqual(confirmed.json(), { status: 'email_added' });
+      // Opening a link signs nobody in.
+      assert.equal(cookieFrom(confirmed, 'matrimony-session'), '');
+      const row = await accountRow(member.id);
+      assert.equal(row.email, address);
+      assert.notEqual(row.email_verified_at, null);
+      assert.equal(row.passwords, 1);
+      const events = await admin.query(
+        `SELECT count(*)::int AS n FROM matrimony.event_outbox WHERE event->>'type'='auth.email_added' AND event->>'subjectId'=$1`,
+        [member.id],
+      );
+      assert.equal(events.rows[0].n, 1);
+
+      const methods = await member.visit('GET', '/api/v1/me/sign-in-methods', {
+        headers: member.bearer,
+      });
+      assert.deepEqual(
+        {
+          email: methods.json().email,
+          emailVerified: methods.json().emailVerified,
+          hasPassword: methods.json().hasPassword,
+        },
+        { email: address, emailVerified: true, hasPassword: true },
+      );
+    },
+  );
+
+  await t.test(
+    'Email: once the email is added, it signs in with the password chosen at registration, and "Forgot password" replaces it',
+    async () => {
+      const member = await phoneMember('eforgot');
+      const address = email('eforgot');
+      await startEmail(member, 'eforgot', address);
+      await settle();
+      await as()('POST', '/api/v1/auth/email/confirm', {
+        body: { token: tokenIn(lastMail(address)) },
+      });
+
+      // The password chosen at registration works with the email at once.
+      assert.equal((await logIn(as(), 'eforgot', phonePassword)).statusCode, 200);
+      assert.equal((await logIn(as(), 'eforgot')).statusCode, 401);
+      const asked = await as()('POST', '/api/v1/auth/password/forgot', {
+        body: { email: address },
+      });
+      assert.equal(asked.statusCode, 202);
+      await settle();
+      const reset = await as()('POST', '/api/v1/auth/password/reset', {
+        body: { token: tokenIn(lastMail(address)), password: strongPassword },
+      });
+      assert.equal(reset.statusCode, 200);
+      const signedIn = await logIn(as(), 'eforgot');
+      assert.equal(signedIn.statusCode, 200);
+      const profile = await me(as(), signedIn.json().accessToken);
+      assert.equal(profile.json().id, member.id);
+      // The old phone session ended with the new password, like any reset.
+      assert.equal((await me(member.visit, member.bearer.authorization.slice(7))).statusCode, 401);
+    },
+  );
+
+  await t.test(
+    'Email: a wrong code sends nothing and adds nothing, and five wrong ones cancel the code',
+    async () => {
+      const member = await phoneMember('ewrong');
+      const address = email('ewrong');
+      await skipTheWait('ewrong');
+      await member.visit('POST', '/api/v1/me/reauth/start', {
+        body: { locale: 'en' },
+        headers: member.bearer,
+      });
+      const wrong = wrongCode('ewrong');
+      const right = lastCodeTo('ewrong');
+      const body = (code: string) => ({ email: address, code, locale: 'en' });
+      for (let i = 0; i < 4; i++) {
+        const refused = await member.visit('POST', '/api/v1/me/email/start', {
+          body: body(wrong),
+          headers: member.bearer,
+        });
+        assert.equal(refused.statusCode, 400);
+        assert.equal(refused.json().error.code, 'CODE_INVALID');
+      }
+      const last = await member.visit('POST', '/api/v1/me/email/start', {
+        body: body(wrong),
+        headers: member.bearer,
+      });
+      assert.equal(last.json().error.code, 'CODE_EXPIRED');
+      const late = await member.visit('POST', '/api/v1/me/email/start', {
+        body: body(right),
+        headers: member.bearer,
+      });
+      assert.equal(late.json().error.code, 'CODE_EXPIRED');
+      await settle();
+      assert.equal(
+        mails.some((m) => m.to === address),
+        false,
+      );
+      assert.equal((await accountRow(member.id)).email, null);
+    },
+  );
+
+  await t.test(
+    'Email: a sign-in code cannot be used to add an email, so a stolen session alone is not enough',
+    async () => {
+      const member = await phoneMember('escope');
+      // The thief holds the session but not the phone: they can ask for the sign-in kind of code
+      // only by asking the real number, and that code belongs to signing in, not to this step.
+      await skipTheWait('escope');
+      await askCode(as(), 'escope');
+      const signInCode = lastCodeTo('escope');
+      const refused = await member.visit('POST', '/api/v1/me/email/start', {
+        body: { email: email('escope'), code: signInCode, locale: 'en' },
+        headers: member.bearer,
+      });
+      assert.equal(refused.statusCode, 400);
+      assert.equal(refused.json().error.code, 'CODE_EXPIRED');
+      await settle();
+      assert.equal(
+        mails.some((m) => m.to === email('escope')),
+        false,
+      );
+      assert.equal((await accountRow(member.id)).email, null);
+    },
+  );
+
+  await t.test(
+    'Email: an address that already has an account is told, not linked, and the asker sees the same answer',
+    async () => {
+      await signUp('eowner');
+      const member = await phoneMember('etaken');
+      const started = await startEmail(member, 'etaken', email('eowner'));
+      assert.equal(started.statusCode, 202);
+      assert.deepEqual(started.json(), { status: 'email_sent' });
+      await settle();
+      const notice = lastMail(email('eowner'));
+      assert.match(notice.text, /already belongs to an account/);
+      assert.equal(tokenIn(notice), '');
+      assert.equal((await accountRow(member.id)).email, null);
+    },
+  );
+
+  await t.test(
+    'Email: an address that another account took while the link was out is refused when the link is opened',
+    async () => {
+      const member = await phoneMember('erace');
+      const address = email('erace');
+      await startEmail(member, 'erace', address);
+      await settle();
+      const link = lastMail(address);
+      await signUp('erace');
+      const confirmed = await as()('POST', '/api/v1/auth/email/confirm', {
+        body: { token: tokenIn(link) },
+      });
+      assert.equal(confirmed.statusCode, 409);
+      assert.equal(confirmed.json().error.code, 'EMAIL_IN_USE');
+      assert.equal((await accountRow(member.id)).email, null);
+    },
+  );
+
+  await t.test(
+    'Email: the link works once, only at its agency, and a newer link cancels an older one',
+    async () => {
+      const member = await phoneMember('elink');
+      await startEmail(member, 'elink', email('elink-first'));
+      await settle();
+      const first = tokenIn(lastMail(email('elink-first')));
+      await startEmail(member, 'elink', email('elink'));
+      await settle();
+      const second = tokenIn(lastMail(email('elink')));
+
+      const cancelled = await as()('POST', '/api/v1/auth/email/confirm', {
+        body: { token: first },
+      });
+      assert.equal(cancelled.statusCode, 400);
+      const elsewhere = await as('other.localhost')('POST', '/api/v1/auth/email/confirm', {
+        body: { token: second },
+      });
+      assert.equal(elsewhere.statusCode, 400);
+      assert.equal((await accountRow(member.id)).email, null);
+      assert.equal(
+        (await as()('POST', '/api/v1/auth/email/confirm', { body: { token: second } })).statusCode,
+        200,
+      );
+      const reused = await as()('POST', '/api/v1/auth/email/confirm', { body: { token: second } });
+      assert.equal(reused.statusCode, 400);
+      assert.equal(reused.json().error.code, 'LINK_INVALID_OR_EXPIRED');
+      assert.equal((await accountRow(member.id)).email, email('elink'));
+    },
+  );
+
+  await t.test(
+    'Email: an account that has an email cannot add another, and the steps need a signed-in member',
+    async () => {
+      await signUp('ehas');
+      const visit = as();
+      const bearer = { authorization: `Bearer ${(await logIn(visit, 'ehas')).json().accessToken}` };
+      const reauth = await visit('POST', '/api/v1/me/reauth/start', {
+        body: { locale: 'en' },
+        headers: bearer,
+      });
+      assert.equal(reauth.statusCode, 409);
+      assert.equal(reauth.json().error.code, 'PHONE_REQUIRED');
+      const start = await visit('POST', '/api/v1/me/email/start', {
+        body: { email: email('ehas-other'), code: '123456', locale: 'en' },
+        headers: bearer,
+      });
+      assert.equal(start.statusCode, 409);
+      assert.equal(start.json().error.code, 'EMAIL_ALREADY_SET');
+
+      for (const [url, body] of [
+        ['/api/v1/me/reauth/start', { locale: 'en' }],
+        ['/api/v1/me/email/start', { email: email('x'), code: '123456', locale: 'en' }],
+      ] as const)
+        assert.equal((await as()('POST', url, { body })).statusCode, 401);
+    },
+  );
+
+  // ---- phone number and password ----
+  const phoneLogin = (visit: ReturnType<typeof as>, name: string, password: string) =>
+    visit('POST', '/api/v1/auth/login', { body: { phone: phoneOf(name), password } });
+
+  await t.test(
+    'Phone and password: registering needs a password, and the member then logs in with the number and it, with no text',
+    async () => {
+      const visit = as();
+      await askCode(visit, 'ppw');
+      const proven = await checkCode(visit, 'ppw');
+      const cookie = { cookie: `matrimony-signup=${cookieFrom(proven, 'matrimony-signup')}` };
+      const base = { displayName: 'Member ppw', acceptTerms: true, acceptPrivacy: true };
+
+      // Without a good password nothing is created, and the step stays open.
+      for (const [password, problem] of [
+        [undefined, 'password:required'],
+        ['short', 'password:tooShort'],
+        ['qwertyuiop', 'password:tooWeak'],
+        ['0' + phoneOf('ppw').slice(4), 'password:sameAsPhone'],
+        [phoneOf('ppw'), 'password:sameAsPhone'],
+      ] as const) {
+        const refused = await visit('POST', '/api/v1/auth/phone/signup', {
+          body: { ...base, ...(password === undefined ? {} : { password }) },
+          headers: cookie,
+        });
+        assert.equal(refused.statusCode, 400, String(password));
+        assert.deepEqual(
+          refused
+            .json()
+            .error.details.fields.map((f: { path: string; code: string }) => `${f.path}:${f.code}`),
+          [problem],
+        );
+      }
+      assert.equal((await accountOfPhone('ppw')).length, 0);
+
+      const created = await visit('POST', '/api/v1/auth/phone/signup', {
+        body: { ...base, password: phonePassword },
+        headers: cookie,
+      });
+      assert.equal(created.statusCode, 200);
+      const id = (await accountOfPhone('ppw'))[0].id;
+
+      // From now on: the number and the password, and no text message is sent.
+      const sent = texts.length;
+      const loggedIn = await phoneLogin(as(), 'ppw', phonePassword);
+      assert.equal(loggedIn.statusCode, 200);
+      assert.equal(cookieFrom(loggedIn, 'matrimony-session').length, 43);
+      assert.equal((await me(as(), loggedIn.json().accessToken)).json().id, id);
+      assert.equal(texts.length, sent);
+    },
+  );
+
+  await t.test(
+    'Phone and password: a wrong password, an unknown number and a number with no password all look the same',
+    async () => {
+      const withPassword = await phoneMember('pwrong');
+      assert.ok(withPassword.id);
+      await accountWithPhone('pnopw');
+      const bodies: string[] = [];
+      for (const [name, password] of [
+        ['pwrong', 'definitely not it'],
+        ['pnopw', phonePassword],
+        ['punreg', phonePassword],
+      ] as const) {
+        const refused = await phoneLogin(as(), name, password);
+        assert.equal(refused.statusCode, 401, name);
+        assert.equal(refused.json().error.code, 'INVALID_CREDENTIALS', name);
+        assert.equal(cookieFrom(refused, 'matrimony-session'), '');
+        bodies.push(JSON.stringify(refused.json().error.details ?? null));
+      }
+      assert.equal(new Set(bodies).size, 1);
+    },
+  );
+
+  await t.test(
+    'Phone and password: five wrong passwords pause that number, even for the right password',
+    async () => {
+      await phoneMember('ppause');
+      for (let i = 0; i < 5; i++)
+        assert.equal((await phoneLogin(as(), 'ppause', 'wrong password here')).statusCode, 401);
+      const paused = await phoneLogin(as(), 'ppause', phonePassword);
+      assert.equal(paused.statusCode, 429);
+      assert.equal(paused.json().error.code, 'TOO_MANY_ATTEMPTS');
+      assert.ok(Number(paused.headers['retry-after']) > 0);
+      // Another number is not affected by it.
+      await phoneMember('pfree');
+      assert.equal((await phoneLogin(as(), 'pfree', phonePassword)).statusCode, 200);
+    },
+  );
+
+  await t.test(
+    'Phone and password: a disabled account is refused only after the right password',
+    async () => {
+      await phoneMember('pdis2');
+      await admin.query(
+        `UPDATE matrimony.accounts SET status='disabled' WHERE agency_id=$1 AND phone_e164=$2`,
+        [agency, phoneOf('pdis2')],
+      );
+      assert.equal((await phoneLogin(as(), 'pdis2', 'wrong password here')).statusCode, 401);
+      const refused = await phoneLogin(as(), 'pdis2', phonePassword);
+      assert.equal(refused.statusCode, 403);
+      assert.equal(refused.json().error.code, 'ACCOUNT_NOT_ACTIVE');
+    },
+  );
+
+  await t.test(
+    'Phone and password: the number belongs to its agency, and an email and a number cannot be sent together',
+    async () => {
+      await phoneMember('pagency');
+      const elsewhere = await as('other.localhost')('POST', '/api/v1/auth/login', {
+        body: { phone: phoneOf('pagency'), password: phonePassword },
+      });
+      assert.equal(elsewhere.statusCode, 401);
+      const both = await as()('POST', '/api/v1/auth/login', {
+        body: { email: email('x'), phone: phoneOf('pagency'), password: phonePassword },
+      });
+      assert.equal(both.statusCode, 400);
+      const neither = await as()('POST', '/api/v1/auth/login', {
+        body: { password: phonePassword },
+      });
+      assert.equal(neither.statusCode, 400);
+    },
+  );
+
+  await t.test(
+    "Change password: a code to the account's own phone sets a new one, ends every session, and the old one stops working",
+    async () => {
+      const member = await phoneMember('pchg');
+      await skipTheWait('pchg');
+      const asked = await member.visit('POST', '/api/v1/me/reauth/start', {
+        body: { locale: 'en' },
+        headers: member.bearer,
+      });
+      assert.equal(asked.statusCode, 202);
+      const newPassword = 'a brand new strong password';
+      const refused = await member.visit('POST', '/api/v1/me/password', {
+        body: { code: wrongCode('pchg'), password: newPassword },
+        headers: member.bearer,
+      });
+      assert.equal(refused.statusCode, 400);
+      assert.equal(refused.json().error.code, 'CODE_INVALID');
+      // Nothing changed: the old password still works.
+      assert.equal((await phoneLogin(as(), 'pchg', phonePassword)).statusCode, 200);
+
+      const changed = await member.visit('POST', '/api/v1/me/password', {
+        body: { code: lastCodeTo('pchg'), password: newPassword },
+        headers: member.bearer,
+      });
+      assert.equal(changed.statusCode, 200);
+      assert.deepEqual(changed.json(), { status: 'password_changed' });
+      // Every session ended, this one too.
+      assert.equal((await me(member.visit, member.bearer.authorization.slice(7))).statusCode, 401);
+      assert.equal((await phoneLogin(as(), 'pchg', phonePassword)).statusCode, 401);
+      assert.equal((await phoneLogin(as(), 'pchg', newPassword)).statusCode, 200);
+      // The code was used up.
+      const again = await member.visit('POST', '/api/v1/me/password', {
+        body: { code: lastCodeTo('pchg'), password: 'yet another strong password' },
+        headers: member.bearer,
+      });
+      assert.equal(again.statusCode, 401);
+    },
+  );
+
+  await t.test(
+    'Change password: a sign-in code cannot be used, and a stolen session without the phone is not enough',
+    async () => {
+      const member = await phoneMember('pstolen');
+      await skipTheWait('pstolen');
+      await askCode(as(), 'pstolen');
+      const signInCode = lastCodeTo('pstolen');
+      const refused = await member.visit('POST', '/api/v1/me/password', {
+        body: { code: signInCode, password: 'a brand new strong password' },
+        headers: member.bearer,
+      });
+      assert.equal(refused.statusCode, 400);
+      assert.equal(refused.json().error.code, 'CODE_EXPIRED');
+      assert.equal((await phoneLogin(as(), 'pstolen', phonePassword)).statusCode, 200);
+      // No session at all: nothing happens.
+      assert.equal(
+        (
+          await as()('POST', '/api/v1/me/password', {
+            body: { code: signInCode, password: 'a brand new strong password' },
+          })
+        ).statusCode,
+        401,
+      );
+    },
+  );
+
+  await t.test(
+    'Change password: a password that is the number or the email is refused without spending the code',
+    async () => {
+      const member = await phoneMember('psame');
+      await skipTheWait('psame');
+      await member.visit('POST', '/api/v1/me/reauth/start', {
+        body: { locale: 'en' },
+        headers: member.bearer,
+      });
+      const code = lastCodeTo('psame');
+      const refused = await member.visit('POST', '/api/v1/me/password', {
+        body: { code, password: phoneOf('psame') },
+        headers: member.bearer,
+      });
+      assert.equal(refused.statusCode, 400);
+      assert.deepEqual(refused.json().error.details.fields, [
+        { path: 'password', code: 'sameAsPhone' },
+      ]);
+      // The same code still works for a good password.
+      const changed = await member.visit('POST', '/api/v1/me/password', {
+        body: { code, password: 'a brand new strong password' },
+        headers: member.bearer,
+      });
+      assert.equal(changed.statusCode, 200);
     },
   );
 });

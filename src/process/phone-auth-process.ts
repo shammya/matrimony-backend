@@ -1,5 +1,6 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import type { Logger } from 'pino';
+import { asciiDigits } from '../bo/phone-number.js';
 import { PHONE_CODE_LENGTH, pendingPhoneSignupSchema, type PhoneSignupInput } from '../bo/phone.js';
 import { PRIVACY_VERSION, TERMS_VERSION, type Registration } from '../bo/registration.js';
 import type { Account } from '../bo/identity.js';
@@ -8,6 +9,7 @@ import type { PhoneCodeRepository } from '../cache/repository/phone-code-reposit
 import type { ThrottleRepository } from '../cache/repository/throttle-repository.js';
 import { AppError } from '../exception/app-error.js';
 import { SecretBox, digest } from '../security/secret-box.js';
+import type { CredentialService } from '../service/credential-service.js';
 import type { RegistrationService } from '../service/registration-service.js';
 import { codeMessage } from '../sms/messages.js';
 import type { SmsSender } from '../sms/sender.js';
@@ -25,6 +27,13 @@ const CODES_PER_AGENCY_PER_DAY = 2000;
 const PENDING_SECONDS = 600;
 
 const secret = () => randomBytes(32).toString('base64url');
+
+/** True when the password is the number itself, in either form (+8801712345678 or 01712345678). */
+export function passwordIsPhone(password: string, phone: string): boolean {
+  const typed = asciiDigits(password).replace(/[\s().+-]/g, '');
+  const digits = phone.replace(/\D/g, '');
+  return typed === digits || (digits.startsWith('880') && typed === `0${digits.slice(3)}`);
+}
 
 /** The agency the request is for, which the text message names. */
 export interface PhoneContext {
@@ -67,6 +76,7 @@ export class PhoneAuthProcess {
       RegistrationService,
       'findByPhone' | 'registerPhone' | 'attachPhone'
     >,
+    private readonly credentials: Pick<CredentialService, 'hash'>,
     private readonly auth: Pick<AuthProcess, 'startSession'>,
     private readonly box: SecretBox,
     private readonly logger: Logger,
@@ -85,6 +95,24 @@ export class PhoneAuthProcess {
     locale: 'bn' | 'en',
   ) {
     return this.send(context, `add:${account.id}`, phone, locale);
+  }
+
+  /**
+   * Sends a code to the signed-in account's own number, to prove it is the owner before something
+   * sensitive (adding an email). The code belongs to this account and cannot sign anyone in.
+   */
+  async sendReauthCode(
+    context: PhoneContext,
+    account: Account,
+    phone: string,
+    locale: 'bn' | 'en',
+  ) {
+    return this.send(context, `reauth:${account.id}`, phone, locale);
+  }
+
+  /** Checks that code. Throws CODE_INVALID (try again) or CODE_EXPIRED (ask for a new one). */
+  async checkReauthCode(agencyId: string, account: Account, phone: string, code: string) {
+    await this.checkCode(this.scope(agencyId, `reauth:${account.id}`, phone), code);
   }
 
   /** Checks the code. A right code signs the person in, or asks them to finish registering. */
@@ -138,9 +166,19 @@ export class PhoneAuthProcess {
     correlationId: string,
   ) {
     const key = this.pendingKey(agencyId, pendingId);
-    const sealed = await this.tokens.take('phone-signup', key);
-    if (!sealed) throw new AppError(400, 'LINK_INVALID_OR_EXPIRED');
-    const pending = pendingPhoneSignupSchema.parse(JSON.parse(this.box.open(sealed, key)));
+    // Read first: a refused password must leave the step open for another try.
+    const waiting = await this.tokens.peek('phone-signup', key);
+    if (!waiting) throw new AppError(400, 'LINK_INVALID_OR_EXPIRED');
+    const pending = pendingPhoneSignupSchema.parse(JSON.parse(this.box.open(waiting, key)));
+    // A password that is just the phone number is among the first things guessed.
+    if (passwordIsPhone(input.password, pending.phone))
+      throw new AppError(400, 'INVALID_REQUEST', {
+        fields: [{ path: 'password', code: 'sameAsPhone' }],
+      });
+    const passwordHash = await this.credentials.hash(input.password);
+    // Now the step is used up, so a double press cannot create two accounts.
+    if (!(await this.tokens.take('phone-signup', key)))
+      throw new AppError(400, 'LINK_INVALID_OR_EXPIRED');
     const registration: Registration = {
       displayName: input.displayName,
       locale: pending.locale,
@@ -150,7 +188,7 @@ export class PhoneAuthProcess {
     };
     const created = await this.registrations.registerPhone(
       agencyId,
-      { phone: pending.phone, displayName: input.displayName },
+      { phone: pending.phone, displayName: input.displayName, passwordHash },
       registration,
       correlationId,
     );

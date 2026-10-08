@@ -168,3 +168,25 @@ await test('registering for someone else needs the confirmation of authority', (
     true,
   );
 });
+
+await test('logging in takes an email or a phone number with the password, never both and never neither', () => {
+  assert.equal(loginInputSchema.safeParse({ email: 'a@b.com', password: 'x' }).success, true);
+  const phone = loginInputSchema.parse({ phone: '০১৭১২-৩৪৫৬৭৮', password: 'x' });
+  assert.equal(phone.phone, '+8801712345678');
+  assert.equal(phone.email, undefined);
+  assert.deepEqual(codes(loginInputSchema, { password: 'x' }), ['email:required']);
+  assert.deepEqual(
+    codes(loginInputSchema, { email: 'a@b.com', phone: '01712345678', password: 'x' }),
+    ['phone:invalid'],
+  );
+  assert.deepEqual(codes(loginInputSchema, { phone: '12345', password: 'x' }), [
+    'phone:invalidPhone',
+  ]);
+  assert.deepEqual(codes(loginInputSchema, { phone: '01712345678', password: '' }), [
+    'password:required',
+  ]);
+  assert.equal(
+    loginInputSchema.safeParse({ phone: '01712345678', password: 'x', role: 'admin' }).success,
+    false,
+  );
+});

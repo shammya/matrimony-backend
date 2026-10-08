@@ -81,6 +81,11 @@ The application runs its own sign-in: email and password today, Google next, pho
 | `POST /api/v1/auth/phone/signup` | Public, same-origin. Name and agreements: creates the member (no email, no password) and signs in |
 | `GET /api/v1/me/sign-in-methods` | The signed-in account's email, phone (partly hidden), password and Google |
 | `POST /api/v1/me/phone/start`, `POST /api/v1/me/phone/verify` | Signed in. Add or change the account's number with a code |
+| `POST /api/v1/auth/login` | Public, same-origin. Email **or** phone number, with the password. Starts a session. No text message is sent |
+| `POST /api/v1/me/password` | Signed in, with a verified phone. A new password, proved by a code to the account's own phone. Ends every session |
+| `POST /api/v1/me/reauth/start` | Signed in, phone-only account. Sends a code to the account's own phone, to prove it is the owner |
+| `POST /api/v1/me/email/start` | Signed in. With that code and an address, emails a link (the address is only added when the link is opened) |
+| `POST /api/v1/auth/email/confirm` | Public, same-origin. Opens that link: adds the verified email to the account that asked. Signs nobody in |
 | `POST /api/v1/auth/google/link` | Public, same-origin. Approves the link with the account's password and signs in like a login |
 | `POST /api/v1/auth/session` | Session cookie + same-origin `Origin`; returns an access token and the CSRF token. Used after a reload or in a new tab |
 | `POST /api/v1/auth/refresh` | Session cookie + same-origin `Origin` + `X-CSRF-Token`; returns a new access token |

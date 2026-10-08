@@ -80,6 +80,70 @@ export function alreadyRegisteredEmail(
       };
 }
 
+/** The link that adds this address to the account that asked, sent to the address itself. */
+export function addEmailEmail(context: Context & { link: string }): MailMessage {
+  const { to, locale, agencyName, link } = context;
+  return locale === 'bn'
+    ? {
+        to,
+        subject: `${agencyName}: আপনার ইমেইল যোগ করুন`,
+        text: [
+          'প্রিয় ব্যবহারকারী,',
+          '',
+          `${agencyName}-এ আপনার অ্যাকাউন্টে এই ইমেইলটি যোগ করার অনুরোধ পেয়েছি। যোগ করতে নিচের লিংকটি খুলুন। লিংকটি ১ ঘণ্টা কাজ করবে এবং একবারই ব্যবহার করা যাবে।`,
+          '',
+          link,
+          '',
+          'আপনি অনুরোধ না করে থাকলে এই ইমেইলটি উপেক্ষা করুন। কোনো ইমেইল যোগ হবে না।',
+        ].join('\n'),
+      }
+    : {
+        to,
+        subject: `${agencyName}: add your email`,
+        text: [
+          'Hello,',
+          '',
+          `We received a request to add this email to an account at ${agencyName}. Open the link below to add it. It works for 1 hour and only once.`,
+          '',
+          link,
+          '',
+          'If you did not ask for this, ignore this email. Nothing will be added.',
+        ].join('\n'),
+      };
+}
+
+/** Sent instead of the link when the address already belongs to an account. */
+export function emailInUseNotice(context: Context & { signInLink: string }): MailMessage {
+  const { to, locale, agencyName, signInLink } = context;
+  return locale === 'bn'
+    ? {
+        to,
+        subject: `${agencyName}: এই ইমেইল আগে থেকেই ব্যবহার হচ্ছে`,
+        text: [
+          'প্রিয় ব্যবহারকারী,',
+          '',
+          `কেউ ${agencyName}-এ অন্য একটি অ্যাকাউন্টে এই ইমেইল যোগ করার চেষ্টা করেছে, কিন্তু এই ইমেইলে আগে থেকেই একটি অ্যাকাউন্ট আছে।`,
+          '',
+          `সাইন ইন করতে: ${signInLink}`,
+          '',
+          'আপনি না করে থাকলে কিছু করতে হবে না।',
+        ].join('\n'),
+      }
+    : {
+        to,
+        subject: `${agencyName}: this email is already in use`,
+        text: [
+          'Hello,',
+          '',
+          `Someone tried to add this email to another account at ${agencyName}, but it already belongs to an account.`,
+          '',
+          `To sign in: ${signInLink}`,
+          '',
+          'If it was not you, you do not need to do anything.',
+        ].join('\n'),
+      };
+}
+
 export function passwordResetEmail(context: Context & { link: string }): MailMessage {
   const { to, locale, agencyName, link } = context;
   return locale === 'bn'

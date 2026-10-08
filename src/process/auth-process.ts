@@ -36,7 +36,7 @@ const secret = () => randomBytes(32).toString('base64url');
  */
 export class AuthProcess {
   constructor(
-    private readonly credentials: Pick<CredentialService, 'verify'>,
+    private readonly credentials: Pick<CredentialService, 'verify' | 'verifyPhone'>,
     private readonly accessTokens: Pick<AccessTokens, 'issue' | 'verify'>,
     private readonly sessions: Pick<
       SessionRepository,
@@ -55,7 +55,9 @@ export class AuthProcess {
    * has no account.
    */
   async login(agencyId: string, input: LoginInput, correlationId: string) {
-    const account = await this.checkPassword(agencyId, input.email, input.password);
+    const account = input.phone
+      ? await this.checkPhonePassword(agencyId, input.phone, input.password)
+      : await this.checkPassword(agencyId, input.email!, input.password);
     return this.startSession(agencyId, account, correlationId);
   }
 
@@ -65,14 +67,32 @@ export class AuthProcess {
    * the link of a Google identity), so none of them can be used to guess around the pause.
    */
   async checkPassword(agencyId: string, email: string, password: string): Promise<Account> {
-    const counter = `login:${agencyId}:${digest(email)}`;
+    return this.guarded(agencyId, digest(email), () =>
+      this.credentials.verify(agencyId, email, password),
+    );
+  }
+
+  /** The same for a phone number and the password of the account that has it. */
+  async checkPhonePassword(agencyId: string, phone: string, password: string): Promise<Account> {
+    return this.guarded(agencyId, digest(`phone:${phone}`), () =>
+      this.credentials.verifyPhone(agencyId, phone, password),
+    );
+  }
+
+  /** The pause after five wrong passwords, shared by every way of checking one. */
+  private async guarded(
+    agencyId: string,
+    who: string,
+    verify: () => Promise<Account>,
+  ): Promise<Account> {
+    const counter = `login:${agencyId}:${who}`;
     const attempts = await this.throttle.peek(counter);
     if (attempts.count >= MAX_FAILED_LOGINS)
       throw new AppError(429, 'TOO_MANY_ATTEMPTS', { retryAfter: attempts.retryAfter });
 
     let account;
     try {
-      account = await this.credentials.verify(agencyId, email, password);
+      account = await verify();
     } catch (error) {
       if (error instanceof AppError && error.code === 'INVALID_CREDENTIALS')
         await this.throttle.hit(counter, LOCKOUT_SECONDS);

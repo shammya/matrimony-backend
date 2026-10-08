@@ -59,7 +59,14 @@ export interface AppDependencies {
   registrations: Pick<RegistrationService, 'signInMethods'>;
   access: Pick<
     AccountAccessProcess,
-    'startRegistration' | 'verifyEmail' | 'requestPasswordReset' | 'resetPassword'
+    | 'startRegistration'
+    | 'verifyEmail'
+    | 'requestPasswordReset'
+    | 'resetPassword'
+    | 'sendReauthCode'
+    | 'startAddEmail'
+    | 'confirmAddEmail'
+    | 'changePassword'
   >;
   identities: Pick<IdentityService, 'tenant'>;
   photos: Pick<PhotoProcess, 'list' | 'upload' | 'remove' | 'makePrimary' | 'image'>;

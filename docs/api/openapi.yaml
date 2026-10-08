@@ -139,10 +139,43 @@ paths:
         '403': { $ref: '#/components/responses/Error403' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /api/v1/auth/email/confirm:
+    post:
+      tags: [Auth]
+      summary: Open the emailed link that adds an email to an account
+      description: |
+        Step three. Public, 10 per minute, same-origin only. Needs no session, because the link may
+        be opened on another device, and it signs nobody in. The link works once, for 1 hour, and
+        only at the agency that sent it. It adds the address, marked as verified, to the account
+        that asked, only if that account still has no email and nobody else has taken the address:
+        409 `EMAIL_IN_USE` or 409 `EMAIL_ALREADY_SET` otherwise. A used, expired or unknown link
+        is 400 `LINK_INVALID_OR_EXPIRED`. Records `auth.email_added`. A password can then be set
+        with the usual forgot-password link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LinkToken' }
+      responses:
+        '200':
+          description: The address was added.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: EMAIL_IN_USE or EMAIL_ALREADY_SET.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /api/v1/auth/login:
     post:
       tags: [Auth]
-      summary: Sign in with email and password
+      summary: Sign in with email or phone number, and a password
       description: |
         Public, 10 per minute per client address, same-origin only. Starts a session: the
         `matrimony-session` cookie (HttpOnly, SameSite=Strict, `__Host-` and Secure in production)
@@ -151,7 +184,10 @@ paths:
         right password (429 `TOO_MANY_ATTEMPTS`, with `details.retryAfter` and a `Retry-After`
         header). An unknown email, an account with no password and a wrong password are all the
         same 401 `INVALID_CREDENTIALS`. A disabled account is told so (403 `ACCOUNT_NOT_ACTIVE`)
-        only after the right password.
+        only after the right password. Send **either** `email` **or** `phone` (a number that a code
+        has proved belongs to an account), never both: the same rules, the same answers and the
+        same pause apply to a phone number, counted separately from the email. No text message is
+        sent, and none is paid for.
       requestBody:
         required: true
         content:
@@ -657,6 +693,115 @@ paths:
         '403': { $ref: '#/components/responses/Error403' }
         '409':
           description: Another account already has this number (PHONE_IN_USE).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/me/reauth/start:
+    post:
+      tags: [Account]
+      summary: Send a code to the account's own phone, to prove it is the owner
+      description: |
+        Step one of adding an email to a phone-only account, and of choosing a new password with a
+        code (`/me/password`). 10 per 10 minutes. The code goes to the
+        number the account already has, never to one from the request, and it belongs to this
+        purpose: it cannot sign anyone in, and a sign-in code cannot be used for it. Same limits as
+        other codes (one a minute and 5 an hour per number). 409 `PHONE_REQUIRED` when the account has
+        no verified phone, 404 `PHONE_NOT_CONFIGURED` when no sender is set up.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReauthStartInput' }
+      responses:
+        '202':
+          description: A code was sent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CodeSent' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: EMAIL_ALREADY_SET or PHONE_REQUIRED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/me/password:
+    post:
+      tags: [Account]
+      summary: Choose a new password, with a code sent to the account's own phone
+      description: |
+        For an account that has a verified phone, including a member who registered with a phone
+        and forgot the password and may have no email. 10 per 10 minutes. Needs the code from
+        `/me/reauth/start` (400 `CODE_INVALID` to try again, 400 `CODE_EXPIRED` after five wrong
+        ones or an old one), so a stolen session alone cannot do it. The new password follows the
+        usual rules and may not be the email or the phone number (400 with the field problem
+        `sameAsEmail` or `sameAsPhone`; the code is not spent). It ends **every** session of the
+        account, this one included, like any password reset: the person logs in again. The owner is
+        told by email when the account has one. Records `auth.password_reset`. 409
+        `PHONE_REQUIRED` without a verified phone.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordInput' }
+      responses:
+        '200':
+          description: The password was changed and every session ended.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: PHONE_REQUIRED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/me/email/start:
+    post:
+      tags: [Account]
+      summary: Send a link to an address to add it to the account
+      description: |
+        Step two. 10 per 10 minutes. With the right code from `/me/reauth/start` (a wrong one is
+        400 `CODE_INVALID`, five wrong ones or an old one 400 `CODE_EXPIRED`), a link that works
+        once for 1 hour is emailed to the address. Nothing is added until the link is opened. The
+        answer is the same whether or not the address already belongs to an account: that account's
+        owner gets a notice instead of a link. Asking again cancels the earlier link. An address is
+        sent 3 of these emails an hour (429 `EMAIL_RATE_LIMITED`). An existing email is never
+        replaced.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddEmailStartInput' }
+      responses:
+        '202':
+          description: The link was sent, or the address is in use and its owner was told.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: EMAIL_ALREADY_SET or PHONE_REQUIRED.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1852,6 +1997,27 @@ components:
         password: { type: boolean }
         google: { type: boolean }
         phone: { type: boolean }
+    ReauthStartInput:
+      type: object
+      additionalProperties: false
+      required: [locale]
+      properties:
+        locale: { type: string, enum: [bn, en], description: The language of the text message. }
+    ChangePasswordInput:
+      type: object
+      additionalProperties: false
+      required: [code, password]
+      properties:
+        code: { type: string, description: The six digits sent to the account's own phone. }
+        password: { type: string, minLength: 10, maxLength: 128 }
+    AddEmailStartInput:
+      type: object
+      additionalProperties: false
+      required: [email, code, locale]
+      properties:
+        email: { type: string, format: email }
+        code: { type: string, description: The six digits sent to the account's own phone. }
+        locale: { type: string, enum: [bn, en], description: The language of the email and of the page its link opens. }
     PhoneStartInput:
       type: object
       additionalProperties: false
@@ -1891,13 +2057,18 @@ components:
     PhoneSignupInput:
       type: object
       additionalProperties: false
-      required: [displayName]
+      required: [displayName, password]
       description: |
-        `displayName` is required. `acceptTerms` and `acceptPrivacy` must be true, and
-        `confirmAuthority` when `onBehalfOfOther` is true; problems come back as the field code
-        `required`. The number comes from the proof, never from the request.
+        `displayName` and `password` are required. The password follows the same rules as any new
+        password (10 to 128 characters, not a very common one; problems come back as `tooShort`,
+        `tooLong`, `tooWeak`) and may not be the phone number itself (`sameAsPhone`). It is stored
+        hashed with the account, so the member can later log in with the number and the password
+        and no text message. `acceptTerms` and `acceptPrivacy` must be true, and `confirmAuthority`
+        when `onBehalfOfOther` is true; problems come back as the field code `required`. The number
+        comes from the proof, never from the request.
       properties:
         displayName: { type: string, minLength: 1, maxLength: 100 }
+        password: { type: string, minLength: 10, maxLength: 128 }
         acceptTerms: { type: boolean, default: false }
         acceptPrivacy: { type: boolean, default: false }
         onBehalfOfOther: { type: boolean, default: false }
@@ -1971,9 +2142,11 @@ components:
     LoginInput:
       type: object
       additionalProperties: false
-      required: [email, password]
+      required: [password]
+      description: Exactly one of `email` and `phone`.
       properties:
         email: { type: string, maxLength: 254, description: Trimmed and lower-cased by the server. }
+        phone: { type: string, maxLength: 40, description: A Bangladeshi mobile number or any number with its + and country code. Bengali digits are accepted. }
         password: { type: string, minLength: 1, maxLength: 256 }
     ForgotPasswordInput:
       type: object
@@ -2314,6 +2487,7 @@ components:
                 GOOGLE_EMAIL_UNVERIFIED (Google has not confirmed the email), ACCOUNT_HAS_NO_PASSWORD (the account has no
                 password to approve a link with), GOOGLE_ALREADY_LINKED, GOOGLE_RETRY, OAUTH_CHALLENGE_EXPIRED,
                 OAUTH_CONTEXT_MISMATCH, and
+                for adding an email: EMAIL_ALREADY_SET, PHONE_REQUIRED, EMAIL_IN_USE, and
                 for phone codes: PHONE_NOT_CONFIGURED, CODE_RATE_LIMITED (with details.retryAfter,
                 seconds), SMS_UNAVAILABLE, CODE_INVALID, CODE_EXPIRED, PHONE_RETRY, PHONE_IN_USE, and
                 for staff: REVIEW_NOT_FOUND, REVIEW_ALREADY_DECIDED, REVIEW_CANCELLED,

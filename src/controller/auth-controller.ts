@@ -12,6 +12,11 @@ import {
   phoneStartInputSchema,
   phoneVerifyInputSchema,
 } from '../bo/phone.js';
+import {
+  addEmailStartInputSchema,
+  changePasswordInputSchema,
+  reauthStartInputSchema,
+} from '../bo/account-email.js';
 import { ZodError } from 'zod';
 import {
   googleLinkInputSchema,
@@ -60,7 +65,14 @@ export function registerAuthController(
   registrations: Pick<RegistrationService, 'signInMethods'>,
   access: Pick<
     AccountAccessProcess,
-    'startRegistration' | 'verifyEmail' | 'requestPasswordReset' | 'resetPassword'
+    | 'startRegistration'
+    | 'verifyEmail'
+    | 'requestPasswordReset'
+    | 'resetPassword'
+    | 'sendReauthCode'
+    | 'startAddEmail'
+    | 'confirmAddEmail'
+    | 'changePassword'
   >,
   config: AppConfig,
 ) {
@@ -483,6 +495,63 @@ export function registerAuthController(
       const input = phoneAttachConfirmInputSchema.parse(req.body);
       await process.confirmAttach(req.tenant!.id, req.principal!, input.phone, input.code, req.id);
       return { status: 'phone_added' };
+    },
+  );
+  // ---- Adding an email to a phone-only account ----
+  // Step one: a code to the account's own phone, to prove it is the owner.
+  app.post(
+    '/api/v1/me/reauth/start',
+    {
+      config: { rateLimit: { max: 10, timeWindow: 600000 } },
+      schema: { response: { 202: codeSentResponseSchema } },
+    },
+    async (req, reply) => {
+      const input = reauthStartInputSchema.parse(req.body);
+      const sent = await access.sendReauthCode(accessContext(req), req.principal!, input.locale);
+      return reply.code(202).send({ status: 'code_sent', ...sent });
+    },
+  );
+  // Step two: with that code and the address, a link is emailed. Nothing is added yet, and the
+  // answer is the same whether or not the address already belongs to an account.
+  app.post(
+    '/api/v1/me/email/start',
+    {
+      config: { rateLimit: { max: 10, timeWindow: 600000 } },
+      schema: { response: { 202: statusResponseSchema } },
+    },
+    async (req, reply) => {
+      const input = addEmailStartInputSchema.parse(req.body);
+      await access.startAddEmail(accessContext(req), req.principal!, input);
+      return reply.code(202).send({ status: 'email_sent' });
+    },
+  );
+  // A new password for the signed-in account, proved by a code sent to its own phone. It ends every
+  // session, this one included, like any password reset.
+  app.post(
+    '/api/v1/me/password',
+    {
+      config: { rateLimit: { max: 10, timeWindow: 600000 } },
+      schema: { response: { 200: statusResponseSchema } },
+    },
+    async (req) => {
+      const input = changePasswordInputSchema.parse(req.body);
+      await access.changePassword(accessContext(req), req.principal!, input, req.id);
+      return { status: 'password_changed' };
+    },
+  );
+  // Step three: the link, opened and confirmed on its page. Public like the other emailed links,
+  // since it may be opened on another device; it signs nobody in.
+  app.post(
+    '/api/v1/auth/email/confirm',
+    {
+      config: { public: true, rateLimit: { max: 10, timeWindow: 60000 } },
+      schema: { response: { 200: statusResponseSchema } },
+    },
+    async (req) => {
+      requireSameOrigin(req);
+      const { token } = verifyEmailInputSchema.parse(req.body);
+      await access.confirmAddEmail(req.tenant!.id, token, req.id);
+      return { status: 'email_added' };
     },
   );
   // Restores the browser session after a reload or in a new tab. It needs only the session cookie

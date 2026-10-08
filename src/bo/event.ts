@@ -11,6 +11,7 @@ export const eventSchema = z
       'auth.password_reset',
       'auth.identity_linked',
       'auth.phone_added',
+      'auth.email_added',
       'account.registered',
       'profile.approved',
       'profile.submitted',

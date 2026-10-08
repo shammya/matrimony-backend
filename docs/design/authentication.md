@@ -90,6 +90,31 @@ ask for a code ──► SMS: six digits, 5 minutes, one use ──► check the
 - **Recycled numbers.** A phone company can give a number to someone new. A phone-only account has no second factor against that; an account with an email and password is only reachable by the number once its owner added it. Worth the reviewer's attention.
 - **Sender.** `SMS_DRIVER=console` prints the text, with its code, in the backend terminal for development, and the configuration refuses it in production. With no driver set, phone sign-in is not offered. A real gateway is another `SmsSender` implementation. Nothing about a gateway's API is assumed here: it must time out and throw when the message is not accepted.
 
+## Adding an email to a phone-only account
+
+Added 8 October 2026. A member who registered with a phone number has no email, so "forgot password" cannot help them and the phone is their only way in (lose the SIM, lose the account). They can add an email, and after that set a password with the usual forgot-password link.
+
+```text
+signed in ──► code to the account's OWN phone (reauth) ──► code + new address ──► link emailed to the address
+          ──► link opened and confirmed ──► address stored as verified     (nobody is signed in by it)
+```
+
+- **Proof of who is asking.** A stolen session must not be able to attach the thief's email, because an email is a way to reset a password and take the account for good. So the request needs a code that only the real phone receives, in a scope of its own (`reauth:<account>`): a sign-in code cannot be used for it, and one for another account cannot either. The number is read from the account, never from the request.
+- **Proof of the address.** The link goes to the address itself and works once, for an hour, only at its agency; asking again cancels the earlier link. The address and account are sealed in the link's record. The account is changed only when the link is confirmed, and only if it still has no email and nobody took the address meanwhile.
+- **Same answer for every address.** If the address already belongs to an account, the asker sees the same 202 and the owner of that address gets a notice instead of a link. Three of these emails an hour per address.
+- **Never replaces.** An account that has an email cannot change it here (409). Changing a recovery address is a bigger, riskier flow and is not built.
+- **Opening the link signs nobody in**, because it may be opened on another device.
+- **Setting the password** is the existing forgot-password flow: it works for any account with an email, with or without a password, and ends every other session. Migration 010 grants the runtime role update on only the `email` and `email_verified_at` columns, and the statement only applies where the email is empty.
+
+## Phone number and password
+
+Added 8 October 2026, after a text message on every login proved too costly and too much trouble for a phone-only member.
+
+- **The password is chosen at registration.** After the code, the page asks for the name, the password and the terms. The password is hashed with Argon2id and stored with the account in the same transaction, so every phone member can log in later with the number and the password and no text message. It follows the same rules as any new password and may not be the number itself.
+- **Logging in with a number.** `POST /auth/login` takes an email or a phone number (exactly one) with the password. Only a number that a code has proved can be used. The answers are the same as for email: an unknown number, a number with no password and a wrong password are one 401, a disabled account is told so only after the right password, and five wrong passwords pause that number for 15 minutes. The number's counter is separate from an email's, so one cannot be used to pause the other.
+- **Forgot the password.** The code login still works (it is how a number is proved), and a signed-in member with a verified phone can choose a new password with a code to that phone (`POST /me/password`). It uses the same proof as adding an email (a code in its own scope, so a sign-in code does not count and a stolen session alone is not enough), ends every session, and tells the owner by email when there is one. This is how a phone-only member without an email recovers.
+- **Account without a password** (a Google member): the email link sets one; once it exists, the number and password work if a number was added.
+
 ## What it protects against
 
 | Threat | Control | Evidence |
@@ -127,7 +152,7 @@ These are my defaults, not requirements from the client.
 - **Google, not yet checked against the real Google.** Everything of ours is tested, and the adapter against a local stand-in for Google, but a real sign-in with your Google Cloud client is the first live check. Moving the consent screen from Testing to production needs a published privacy policy.
 - **Unlinking Google**, and showing which sign-in methods an account has.
 - **A real SMS gateway.** Phone codes work with the development console sender. A gateway that reaches Bangladeshi numbers reliably, with its price and sender-name rules checked, plugs into `SmsSender`; the first real send is the live check. Phone-only members created before phone sign-in (by the old Auth0 flow) have no verified number, so they cannot sign in by phone until they add it, and have no email or password until one is set with `npm run auth:set-password`.
-- **Adding an email or a password to a phone-only account**, and changing a number with a stronger check than the signed-in session plus a code on the new number (for example asking the password first).
+- **Changing an existing email, and changing a password while signed in.** (Adding an email to a phone-only account is built; see above.) Changing a number still needs only the signed-in session plus a code on the new number; asking the password or a code on the old number first is a decision for the reviewer.
 - **Email delivery service.** The SMTP adapter works with any provider but has only been tested against a local SMTP server. Choose a provider, verify the sender domain (SPF, DKIM, DMARC) and send a real test.
 - Change password while signed in, a list of devices with remote sign-out, staff invitation by email, multi-factor authentication, a breached-password check, a different sender per agency.
 - `test/integration/resources.test.ts` (MongoDB) was not run during this change.

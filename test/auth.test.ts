@@ -67,13 +67,20 @@ function fixture(options: { accessTtl?: number; maxSessions?: number } = {}) {
   };
 
   const events: WorkflowEvent[] = [];
+  const phoneChecks: { agencyId: string; phone: string }[] = [];
   let accountActive = true;
   let verify = async (_agency: string, _email: string, password: string) => {
     if (password !== login.password) throw new AppError(401, 'INVALID_CREDENTIALS');
     return account;
   };
   const auth = new AuthProcess(
-    { verify: (agencyId, email, password) => verify(agencyId, email, password) },
+    {
+      verify: (agencyId, email, password) => verify(agencyId, email, password),
+      verifyPhone: async (agencyId, phone, password) => {
+        phoneChecks.push({ agencyId, phone });
+        return verify(agencyId, phone, password);
+      },
+    },
     tokens,
     sessions,
     {
@@ -99,6 +106,7 @@ function fixture(options: { accessTtl?: number; maxSessions?: number } = {}) {
     tokens,
     store,
     events,
+    phoneChecks,
     limited,
     counters,
     setVerify: (fn: typeof verify) => {
@@ -299,7 +307,7 @@ await test('signing out while a refresh is running cannot bring the session back
   const f = fixture();
   const first = await f.signedIn();
   const slow = new AuthProcess(
-    { verify: async () => account },
+    { verify: async () => account, verifyPhone: async () => account },
     {
       verify: (token) => f.tokens.verify(token),
       issue: async (id, ttl) => {
@@ -405,4 +413,59 @@ await test('signing out needs the CSRF token, ends the session and records it', 
   );
   // Signing out twice is not an error.
   await f.auth.logout(agency, first.sessionId, first.csrfToken, 'req');
+});
+
+const phoneLogin = { phone: '+8801712345678', password: login.password };
+
+await test('a phone number and its password sign in like an email and password do', async () => {
+  const f = fixture();
+  const result = await f.auth.login(agency, phoneLogin, 'req-phone');
+  assert.equal(result.sessionId.length, 43);
+  assert.deepEqual(f.phoneChecks, [{ agencyId: agency, phone: '+8801712345678' }]);
+  assert.equal((await f.auth.authenticate(agency, result.accessToken)).id, account.id);
+  assert.deepEqual(
+    f.events.map((e) => [e.type, e.correlationId]),
+    [['auth.login', 'req-phone']],
+  );
+});
+
+await test('a wrong password for a number is a plain 401, and five of them pause that number', async () => {
+  const f = fixture();
+  for (let i = 0; i < 5; i++)
+    await assert.rejects(
+      () => f.auth.login(agency, { ...phoneLogin, password: 'nope' }, 'r'),
+      (error) => error instanceof AppError && error.status === 401,
+    );
+  // Now even the right password waits, and the check is not even run.
+  const before = f.phoneChecks.length;
+  await assert.rejects(
+    () => f.auth.login(agency, phoneLogin, 'r'),
+    (error) =>
+      error instanceof AppError && error.status === 429 && error.code === 'TOO_MANY_ATTEMPTS',
+  );
+  assert.equal(f.phoneChecks.length, before);
+});
+
+await test("a number's pause is its own: it does not pause the email of the same person, and a good login clears it", async () => {
+  const f = fixture();
+  for (let i = 0; i < 4; i++)
+    await assert.rejects(() => f.auth.login(agency, { ...phoneLogin, password: 'nope' }, 'r'));
+  // The email counter was never touched.
+  assert.equal((await f.auth.login(agency, login, 'r')).sessionId.length, 43);
+  // A right password clears the number's count, so four more wrong ones do not pause it.
+  assert.equal((await f.auth.login(agency, phoneLogin, 'r')).sessionId.length, 43);
+  for (let i = 0; i < 4; i++)
+    await assert.rejects(() => f.auth.login(agency, { ...phoneLogin, password: 'nope' }, 'r'));
+  assert.equal((await f.auth.login(agency, phoneLogin, 'r')).sessionId.length, 43);
+});
+
+await test('a disabled account is not signed in by phone either', async () => {
+  const f = fixture();
+  f.setVerify(async () => {
+    throw new AppError(403, 'ACCOUNT_NOT_ACTIVE');
+  });
+  await assert.rejects(
+    () => f.auth.login(agency, phoneLogin, 'r'),
+    (error) => error instanceof AppError && error.code === 'ACCOUNT_NOT_ACTIVE',
+  );
 });

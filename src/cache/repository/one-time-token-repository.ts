@@ -1,7 +1,12 @@
 import type { Redis } from 'ioredis';
 
 export type TokenPurpose =
-  'registration' | 'password-reset' | 'google-link' | 'google-signup' | 'phone-signup';
+  | 'registration'
+  | 'password-reset'
+  | 'google-link'
+  | 'google-signup'
+  | 'phone-signup'
+  | 'email-add';
 
 /**
  * Single-use secrets that travel by email (a link to open). Only the SHA-256 of the secret is

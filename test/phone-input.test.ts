@@ -104,32 +104,44 @@ await test('adding a number needs the number and the code, and nothing else', ()
 });
 
 const signup = problems(phoneSignupInputSchema);
+const GOOD = 'a strong phone password';
 
 await test('creating the account after a code needs a name and both agreements, and says which is missing', () => {
-  assert.deepEqual(signup({}), ['displayName:required']);
-  assert.deepEqual(signup({ displayName: 'Nina' }), [
+  assert.deepEqual(signup({}), ['displayName:required', 'password:required']);
+  assert.deepEqual(signup({ displayName: 'Nina', password: GOOD }), [
     'acceptPrivacy:required',
     'acceptTerms:required',
   ]);
-  assert.deepEqual(signup({ displayName: 'Nina', acceptTerms: true }), ['acceptPrivacy:required']);
-  assert.deepEqual(signup({ displayName: 'Nina', acceptTerms: true, acceptPrivacy: true }), []);
-  assert.deepEqual(signup({ displayName: '  ', acceptTerms: true, acceptPrivacy: true }), [
-    'displayName:required',
+  assert.deepEqual(signup({ displayName: 'Nina', password: GOOD, acceptTerms: true }), [
+    'acceptPrivacy:required',
   ]);
   assert.deepEqual(
-    signup({ displayName: 'x'.repeat(101), acceptTerms: true, acceptPrivacy: true }),
+    signup({ displayName: 'Nina', password: GOOD, acceptTerms: true, acceptPrivacy: true }),
+    [],
+  );
+  assert.deepEqual(
+    signup({ displayName: '  ', password: GOOD, acceptTerms: true, acceptPrivacy: true }),
+    ['displayName:required'],
+  );
+  assert.deepEqual(
+    signup({
+      displayName: 'x'.repeat(101),
+      password: GOOD,
+      acceptTerms: true,
+      acceptPrivacy: true,
+    }),
     ['displayName:tooLong'],
   );
 });
 
 await test('registering for someone else needs the confirmation of authority at this step too', () => {
-  const base = { displayName: 'Nina', acceptTerms: true, acceptPrivacy: true };
+  const base = { displayName: 'Nina', password: GOOD, acceptTerms: true, acceptPrivacy: true };
   assert.deepEqual(signup({ ...base, onBehalfOfOther: true }), ['confirmAuthority:required']);
   assert.deepEqual(signup({ ...base, onBehalfOfOther: true, confirmAuthority: true }), []);
 });
 
 await test('the number, the role and the agency cannot be sent when creating the account', () => {
-  const base = { displayName: 'Nina', acceptTerms: true, acceptPrivacy: true };
+  const base = { displayName: 'Nina', password: GOOD, acceptTerms: true, acceptPrivacy: true };
   for (const extra of [
     { phone: '+8801712345678' },
     { role: 'admin' },
@@ -164,4 +176,14 @@ await test('phone sign-in is off unless a way to send the codes is set, and prod
   };
   assert.doesNotThrow(() => loadConfig(production));
   assert.throws(() => loadConfig({ ...production, SMS_DRIVER: 'console' }), /SMS_DRIVER/);
+});
+
+await test('the password chosen at registration follows the same rules as any new password', () => {
+  const base = { displayName: 'Nina', acceptTerms: true, acceptPrivacy: true };
+  assert.deepEqual(signup({ ...base, password: 'short' }), ['password:tooShort']);
+  assert.deepEqual(signup({ ...base, password: 'password123' }), ['password:tooWeak']);
+  assert.deepEqual(signup({ ...base, password: 'qwertyuiop' }), ['password:tooWeak']);
+  assert.deepEqual(signup({ ...base, password: 'x'.repeat(129) }), ['password:tooLong']);
+  assert.deepEqual(signup({ ...base, password: 'a strong phone password' }), []);
+  assert.deepEqual(signup({ ...base }), ['password:required']);
 });

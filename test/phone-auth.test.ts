@@ -27,7 +27,12 @@ function setup() {
   const messages: SmsMessage[] = [];
   const logs: string[] = [];
   const members: Member[] = [];
-  const registered: { phone: string; displayName: string; registration: Registration }[] = [];
+  const registered: {
+    phone: string;
+    displayName: string;
+    passwordHash: string;
+    registration: Registration;
+  }[] = [];
   const attached: { accountId: string; phone: string }[] = [];
   const sessions: string[] = [];
   const stored = new Map<string, string>();
@@ -97,7 +102,12 @@ function setup() {
           displayName: member.displayName,
         };
         members.push({ account, phone: member.phone, status: 'active' });
-        registered.push({ phone: member.phone, displayName: member.displayName, registration });
+        registered.push({
+          phone: member.phone,
+          displayName: member.displayName,
+          passwordHash: member.passwordHash,
+          registration,
+        });
         return { created: true, account };
       },
       attachPhone: async (_agencyId, accountId, number) => {
@@ -105,6 +115,7 @@ function setup() {
         return attachResult;
       },
     },
+    { hash: async (password) => `hash-of-${password}` },
     {
       startSession: async (_agencyId, account) => {
         sessions.push(account.id);
@@ -161,6 +172,7 @@ function setup() {
 
 const signupInput = {
   displayName: 'Nina',
+  password: 'a strong phone password',
   acceptTerms: true,
   acceptPrivacy: true,
   onBehalfOfOther: false,
@@ -523,4 +535,37 @@ await test('asking for an adding code for a number that has an account looks the
   const free = await f.process.sendAttachCode(f.context, me.account, '+8801922222222', 'en');
   assert.deepEqual(taken, free);
   assert.equal(f.messages.length, 2);
+});
+
+await test('the password chosen at registration is hashed and stored with the new account, never kept as typed', async () => {
+  const f = setup();
+  await f.process.sendCode(f.context, phone, 'en');
+  const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r');
+  const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
+  await f.process.signup(agency, pendingId, signupInput, 'r');
+  assert.equal(f.registered[0]!.passwordHash, 'hash-of-a strong phone password');
+  const everything = JSON.stringify([...f.pendingStore, ...f.stored]);
+  assert.equal(everything.includes('a strong phone password'), false);
+});
+
+await test('a password that is the phone number is refused in either form, and the step stays open for another try', async () => {
+  for (const password of ['01712345678', '+8801712345678', '8801712345678', '০১৭১২৩৪৫৬৭৮']) {
+    const f = setup();
+    await f.process.sendCode(f.context, phone, 'en');
+    const outcome = await f.process.verifyCode(agency, phone, f.lastCode(), 'en', 'r');
+    const pendingId = outcome.kind === 'signup' ? outcome.pendingId : '';
+    await assert.rejects(
+      () => f.process.signup(agency, pendingId, { ...signupInput, password }, 'r'),
+      (error) =>
+        error instanceof AppError &&
+        error.status === 400 &&
+        JSON.stringify(error.details) ===
+          JSON.stringify({ fields: [{ path: 'password', code: 'sameAsPhone' }] }),
+      password,
+    );
+    assert.equal(f.members.length, 0, password);
+    // The step was not used up: a good password still works.
+    await f.process.signup(agency, pendingId, signupInput, 'r');
+    assert.equal(f.members.length, 1, password);
+  }
 });

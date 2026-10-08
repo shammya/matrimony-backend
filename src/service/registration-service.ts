@@ -56,13 +56,13 @@ export class RegistrationService {
   }
 
   /**
-   * Creates a member from a phone number a code has just proven. There is no email and no
-   * password. The account, the consents and an event are written in one transaction. Never used
+   * Creates a member from a phone number a code has just proven. There is no email. The account,
+   * its password, the consents and an event are written in one transaction. Never used
    * when the number already has an account: that signs in.
    */
   async registerPhone(
     agencyId: string,
-    member: { phone: string; displayName: string },
+    member: { phone: string; displayName: string; passwordHash: string },
     registration: Registration,
     correlationId: string,
   ): Promise<CreateResult> {
@@ -75,6 +75,7 @@ export class RegistrationService {
         locale: registration.locale,
       });
       if (!account) return { created: false };
+      await unit.createCredential(agencyId, account.id, member.passwordHash);
       await unit.recordConsents(agencyId, account.id, consentsFor(registration));
       await unit.appendEvent(this.event('account.registered', agencyId, account.id, correlationId));
       return { created: true, account };
@@ -100,6 +101,32 @@ export class RegistrationService {
       });
     } catch (error) {
       // Two accounts proved the same number at the same moment: the database let only one keep it.
+      if ((error as { code?: string }).code === '23505') return 'taken';
+      throw error;
+    }
+  }
+
+  /**
+   * Adds an email to an account that has none. The caller must already have proved the address (a
+   * link sent to it) and the person (a code sent to their phone). An existing address is never
+   * replaced. 'taken' when another account uses the address; 'unavailable' when the account has an
+   * email already or is not active.
+   */
+  async attachEmail(
+    agencyId: string,
+    accountId: string,
+    email: string,
+    correlationId: string,
+  ): Promise<'attached' | 'taken' | 'unavailable'> {
+    try {
+      return await this.db.inTransaction(agencyId, async (unit) => {
+        if (await unit.findByEmail(agencyId, email)) return 'taken' as const;
+        if (!(await unit.setEmail(agencyId, accountId, email))) return 'unavailable' as const;
+        await unit.appendEvent(this.event('auth.email_added', agencyId, accountId, correlationId));
+        return 'attached' as const;
+      });
+    } catch (error) {
+      // Two accounts proved the same address at the same moment: the database let only one keep it.
       if ((error as { code?: string }).code === '23505') return 'taken';
       throw error;
     }
@@ -171,7 +198,7 @@ export class RegistrationService {
   }
 
   private event(
-    type: 'account.registered' | 'auth.identity_linked' | 'auth.phone_added',
+    type: 'account.registered' | 'auth.identity_linked' | 'auth.phone_added' | 'auth.email_added',
     agencyId: string,
     accountId: string,
     correlationId: string,

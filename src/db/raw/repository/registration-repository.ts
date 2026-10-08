@@ -90,6 +90,17 @@ export class RegistrationRepository {
     return result.rowCount === 1;
   }
 
+  /** True when the active account, which had no email, now has this one. */
+  async setEmail(
+    tx: Transaction,
+    agencyId: string,
+    accountId: string,
+    email: string,
+  ): Promise<boolean> {
+    const result = await tx.query(registrationQueries.setEmail, [agencyId, accountId, email]);
+    return result.rowCount === 1;
+  }
+
   async signInMethods(
     tx: Transaction,
     agencyId: string,

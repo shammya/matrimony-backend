@@ -47,6 +47,10 @@ async function build(
     signup: [],
     sendAttachCode: [],
     confirmAttach: [],
+    sendReauthCode: [],
+    startAddEmail: [],
+    confirmAddEmail: [],
+    changePassword: [],
   };
   const track =
     <T>(name: string, result: T) =>
@@ -90,7 +94,25 @@ async function build(
       },
     },
     auth: authFor(async () => account),
-    access: unusedAccess,
+    access: {
+      ...unusedAccess,
+      sendReauthCode: track('sendReauthCode', {
+        resendAfter: 60,
+        expiresIn: 300,
+      }) as unknown as AppDependencies['access']['sendReauthCode'],
+      startAddEmail: track(
+        'startAddEmail',
+        undefined,
+      ) as unknown as AppDependencies['access']['startAddEmail'],
+      confirmAddEmail: track(
+        'confirmAddEmail',
+        undefined,
+      ) as unknown as AppDependencies['access']['confirmAddEmail'],
+      changePassword: track(
+        'changePassword',
+        undefined,
+      ) as unknown as AppDependencies['access']['changePassword'],
+    },
     ...(options.phone === false
       ? {}
       : {
@@ -334,6 +356,7 @@ await test('giving a name and agreeing creates the account and signs in; the sig
     '/api/v1/auth/phone/signup',
     {
       displayName: ' Nina ',
+      password: 'a strong phone password',
       acceptTerms: true,
       acceptPrivacy: true,
       onBehalfOfOther: true,
@@ -351,6 +374,7 @@ await test('giving a name and agreeing creates the account and signs in; the sig
   assert.equal(pending, pendingId);
   assert.deepEqual(input, {
     displayName: 'Nina',
+    password: 'a strong phone password',
     acceptTerms: true,
     acceptPrivacy: true,
     onBehalfOfOther: true,
@@ -364,11 +388,11 @@ await test('agreeing needs a name and both agreements, and nothing about the per
   const cookie = { cookie: `matrimony-signup=${pendingId}` };
   const none = await send('POST', '/api/v1/auth/phone/signup', {}, cookie);
   assert.equal(none.statusCode, 400);
-  assert.deepEqual(fields(none), ['displayName:required']);
+  assert.deepEqual(fields(none), ['displayName:required', 'password:required']);
   const noAgreement = await send(
     'POST',
     '/api/v1/auth/phone/signup',
-    { displayName: 'Nina' },
+    { displayName: 'Nina', password: 'a strong phone password' },
     cookie,
   );
   assert.deepEqual(fields(noAgreement), ['acceptPrivacy:required', 'acceptTerms:required']);
@@ -388,7 +412,12 @@ await test('agreeing needs a name and both agreements, and nothing about the per
   const foreign = await send(
     'POST',
     '/api/v1/auth/phone/signup',
-    { displayName: 'Nina', acceptTerms: true, acceptPrivacy: true },
+    {
+      displayName: 'Nina',
+      password: 'a strong phone password',
+      acceptTerms: true,
+      acceptPrivacy: true,
+    },
     { ...cookie, origin: 'https://evil.example' },
   );
   assert.equal(foreign.statusCode, 403);
@@ -405,7 +434,12 @@ await test('a spent step and a number that got an account meanwhile are safe err
     const response = await send(
       'POST',
       '/api/v1/auth/phone/signup',
-      { displayName: 'Nina', acceptTerms: true, acceptPrivacy: true },
+      {
+        displayName: 'Nina',
+        password: 'a strong phone password',
+        acceptTerms: true,
+        acceptPrivacy: true,
+      },
       { cookie: `matrimony-signup=${pendingId}` },
     );
     assert.equal(response.statusCode, status);
@@ -521,6 +555,226 @@ await test('a number that is in use, a wrong code or an old one are safe errors'
       'POST',
       '/api/v1/me/phone/verify',
       { phone: number, code: '123456' },
+      bearer,
+    );
+    assert.equal(response.statusCode, status);
+    assert.equal(response.json().error.code, code);
+  }
+});
+
+await test('adding an email: the first step sends a code to the account itself, for a signed-in member only', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const anonymous = await send('POST', '/api/v1/me/reauth/start', { locale: 'en' });
+  assert.equal(anonymous.statusCode, 401);
+  const response = await send('POST', '/api/v1/me/reauth/start', { locale: 'bn' }, bearer);
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(response.json(), { status: 'code_sent', resendAfter: 60, expiresIn: 300 });
+  const [context, who, locale] = calls.sendReauthCode![0]!;
+  assert.deepEqual(context, {
+    agencyId: agency,
+    agencyName: 'MSBD',
+    origin: 'http://localhost',
+  });
+  assert.equal((who as { id: string }).id, account.id);
+  assert.equal(locale, 'bn');
+  // Which number the code goes to is not something the request can say.
+  const sneaky = await send(
+    'POST',
+    '/api/v1/me/reauth/start',
+    { locale: 'bn', phone: '+8801811111111' },
+    bearer,
+  );
+  assert.equal(sneaky.statusCode, 400);
+  assert.equal(calls.sendReauthCode!.length, 1);
+});
+
+await test('adding an email: the second step takes the address and the code, and answers 202 with no cookie', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const body = { email: ' Nina@Example.com ', code: '১২৩৪৫৬', locale: 'en' };
+  assert.equal((await send('POST', '/api/v1/me/email/start', body)).statusCode, 401);
+  const response = await send('POST', '/api/v1/me/email/start', body, bearer);
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(response.json(), { status: 'email_sent' });
+  assert.equal(cookiesOf(response), '');
+  const [, who, input] = calls.startAddEmail![0]!;
+  assert.equal((who as { id: string }).id, account.id);
+  assert.deepEqual(input, { email: 'nina@example.com', code: '123456', locale: 'en' });
+});
+
+await test('adding an email: a bad address or code, or anything extra, never reaches the process', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const ok = { email: 'nina@example.com', code: '123456', locale: 'en' };
+  for (const bad of [
+    { ...ok, email: 'not-an-email' },
+    { ...ok, email: '' },
+    { ...ok, code: '12345' },
+    { ...ok, locale: 'fr' },
+    { ...ok, accountId: 'x' },
+    { ...ok, role: 'admin' },
+  ])
+    assert.equal((await send('POST', '/api/v1/me/email/start', bad, bearer)).statusCode, 400);
+  assert.equal(calls.startAddEmail!.length, 0);
+});
+
+await test('adding an email: refusals are safe errors that keep their codes', async (t) => {
+  for (const [error, status, code] of [
+    [new AppError(409, 'EMAIL_ALREADY_SET'), 409, 'EMAIL_ALREADY_SET'],
+    [new AppError(409, 'PHONE_REQUIRED'), 409, 'PHONE_REQUIRED'],
+    [new AppError(400, 'CODE_INVALID'), 400, 'CODE_INVALID'],
+    [new AppError(400, 'CODE_EXPIRED'), 400, 'CODE_EXPIRED'],
+    [new AppError(429, 'EMAIL_RATE_LIMITED', { retryAfter: 900 }), 429, 'EMAIL_RATE_LIMITED'],
+    [new AppError(404, 'PHONE_NOT_CONFIGURED'), 404, 'PHONE_NOT_CONFIGURED'],
+  ] as const) {
+    const { app, send } = await build({ fail: { startAddEmail: error } });
+    t.after(() => app.close());
+    const response = await send(
+      'POST',
+      '/api/v1/me/email/start',
+      { email: 'nina@example.com', code: '123456', locale: 'en' },
+      bearer,
+    );
+    assert.equal(response.statusCode, status);
+    assert.equal(response.json().error.code, code);
+  }
+});
+
+await test('opening the emailed link adds the address and signs nobody in', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const token = 'L'.repeat(43);
+  // No session is needed: the link may be opened on another device.
+  const response = await send('POST', '/api/v1/auth/email/confirm', { token });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { status: 'email_added' });
+  assert.equal(cookiesOf(response), '');
+  assert.deepEqual(calls.confirmAddEmail![0]!.slice(0, 2), [agency, token]);
+  assert.equal(typeof calls.confirmAddEmail![0]![2], 'string');
+});
+
+await test('the confirm link is for this site only, a malformed one never reaches the process, and refusals are plain', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const token = 'L'.repeat(43);
+  assert.equal(
+    (
+      await send(
+        'POST',
+        '/api/v1/auth/email/confirm',
+        { token },
+        { origin: 'https://evil.example' },
+      )
+    ).statusCode,
+    403,
+  );
+  assert.equal(
+    (await send('POST', '/api/v1/auth/email/confirm', { token: 'short' })).statusCode,
+    400,
+  );
+  assert.equal(
+    (await send('POST', '/api/v1/auth/email/confirm', { token, extra: 1 })).statusCode,
+    400,
+  );
+  assert.equal(calls.confirmAddEmail!.length, 0);
+  for (const [error, status, code] of [
+    [new AppError(400, 'LINK_INVALID_OR_EXPIRED'), 400, 'LINK_INVALID_OR_EXPIRED'],
+    [new AppError(409, 'EMAIL_IN_USE'), 409, 'EMAIL_IN_USE'],
+    [new AppError(409, 'EMAIL_ALREADY_SET'), 409, 'EMAIL_ALREADY_SET'],
+  ] as const) {
+    const failing = await build({ fail: { confirmAddEmail: error } });
+    t.after(() => failing.app.close());
+    const response = await failing.send('POST', '/api/v1/auth/email/confirm', { token });
+    assert.equal(response.statusCode, status);
+    assert.equal(response.json().error.code, code);
+  }
+});
+
+await test('registering with a phone needs a password that follows the rules, and the backend reports which rule', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const cookie = { cookie: `matrimony-signup=${pendingId}` };
+  const agreed = { displayName: 'Nina', acceptTerms: true, acceptPrivacy: true };
+  const missing = await send('POST', '/api/v1/auth/phone/signup', agreed, cookie);
+  assert.equal(missing.statusCode, 400);
+  assert.deepEqual(fields(missing), ['password:required']);
+  for (const [password, problem] of [
+    ['short', 'tooShort'],
+    ['qwertyuiop', 'tooWeak'],
+  ] as const) {
+    const refused = await send(
+      'POST',
+      '/api/v1/auth/phone/signup',
+      { ...agreed, password },
+      cookie,
+    );
+    assert.equal(refused.statusCode, 400);
+    assert.deepEqual(fields(refused), [`password:${problem}`]);
+  }
+  assert.equal(calls.signup!.length, 0);
+});
+
+await test('a password that is the number comes back as the field problem the page shows', async (t) => {
+  const { app, send } = await build({
+    fail: {
+      signup: new AppError(400, 'INVALID_REQUEST', {
+        fields: [{ path: 'password', code: 'sameAsPhone' }],
+      }),
+    },
+  });
+  t.after(() => app.close());
+  const response = await send(
+    'POST',
+    '/api/v1/auth/phone/signup',
+    {
+      displayName: 'Nina',
+      password: 'a strong phone password',
+      acceptTerms: true,
+      acceptPrivacy: true,
+    },
+    { cookie: `matrimony-signup=${pendingId}` },
+  );
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(fields(response), ['password:sameAsPhone']);
+});
+
+await test('changing the password: only for a signed-in member, with the code and a valid password', async (t) => {
+  const { app, calls, send } = await build();
+  t.after(() => app.close());
+  const body = { code: '১২৩৪৫৬', password: 'a brand new strong password' };
+  assert.equal((await send('POST', '/api/v1/me/password', body)).statusCode, 401);
+  const response = await send('POST', '/api/v1/me/password', body, bearer);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { status: 'password_changed' });
+  assert.equal(cookiesOf(response), '');
+  const [, who, input] = calls.changePassword![0]!;
+  assert.equal((who as { id: string }).id, account.id);
+  assert.deepEqual(input, { code: '123456', password: 'a brand new strong password' });
+  for (const bad of [
+    { ...body, password: 'short' },
+    { ...body, password: 'qwertyuiop' },
+    { ...body, code: '12345' },
+    { password: body.password },
+    { ...body, accountId: 'x' },
+  ])
+    assert.equal((await send('POST', '/api/v1/me/password', bad, bearer)).statusCode, 400);
+  assert.equal(calls.changePassword!.length, 1);
+});
+
+await test('changing the password: refusals are safe errors that keep their codes', async (t) => {
+  for (const [error, status, code] of [
+    [new AppError(400, 'CODE_INVALID'), 400, 'CODE_INVALID'],
+    [new AppError(400, 'CODE_EXPIRED'), 400, 'CODE_EXPIRED'],
+    [new AppError(409, 'PHONE_REQUIRED'), 409, 'PHONE_REQUIRED'],
+    [new AppError(403, 'ACCOUNT_NOT_ACTIVE'), 403, 'ACCOUNT_NOT_ACTIVE'],
+  ] as const) {
+    const { app, send } = await build({ fail: { changePassword: error } });
+    t.after(() => app.close());
+    const response = await send(
+      'POST',
+      '/api/v1/me/password',
+      { code: '123456', password: 'a brand new strong password' },
       bearer,
     );
     assert.equal(response.statusCode, status);
