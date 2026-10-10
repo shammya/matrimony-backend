@@ -68,6 +68,36 @@ export const unusedClients = {
   listStaff: unused,
 };
 
+/** A candidate service that must not be reached, for tests about other routes. */
+export const unusedCandidates = {
+  generate: unused,
+  list: unused,
+  settings: unused,
+  saveSettings: unused,
+  release: unused,
+  remove: unused,
+};
+
+/** A matches process that must not be reached, for tests about other routes. */
+export const unusedMatches = {
+  page: unused,
+  detail: unused,
+  photo: unused,
+};
+
+/** A connection service that must not be reached, for tests about other routes. */
+export const unusedConnections = {
+  send: unused,
+  respond: unused,
+  withdraw: unused,
+  shareContact: unused,
+  list: unused,
+  notifications: unused,
+  staffList: unused,
+  staffRespond: unused,
+  staffShareContact: unused,
+};
+
 /** The staff invitation process for tests about other routes. */
 export const unusedInvitations = {
   invite: unused,

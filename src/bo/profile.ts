@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import {
   BLOOD_GROUPS,
+  CHILDREN_STATUSES,
   COMPLEXIONS,
   DEGREES,
   DIETARY_PREFERENCES,
@@ -13,9 +14,12 @@ import {
   MANAGED_FOR,
   MARITAL_STATUSES,
   OCCUPATIONS,
+  PROFESSIONS,
   RELIGIONS,
   RELIGIOUS_PRACTICES,
+  RELOCATION_OPTIONS,
   SECTS,
+  SMOKING_HABITS,
 } from './dictionaries.js';
 
 /**
@@ -150,6 +154,10 @@ export function profileInputSchema(now: Date = new Date()) {
       familyStatusCode: optionalCode(FAMILY_STATUSES),
       religiousPracticeCode: optionalCode(RELIGIOUS_PRACTICES),
       dietaryPreferenceCode: optionalCode(DIETARY_PREFERENCES),
+      professionCode: optionalCode(PROFESSIONS),
+      smokingCode: optionalCode(SMOKING_HABITS),
+      childrenCode: optionalCode(CHILDREN_STATUSES),
+      relocationCode: optionalCode(RELOCATION_OPTIONS),
       hobbies: text(500),
       aboutMe: text(2000),
     })
@@ -201,6 +209,13 @@ export function profileInputSchema(now: Date = new Date()) {
         incomeMinBandCode: optionalCode(INCOME_BANDS),
         incomeMaxBandCode: optionalCode(INCOME_BANDS),
         familyStatusMinCode: optionalCode(FAMILY_STATUSES),
+        professionCodes: codeList(PROFESSIONS),
+        complexionCodes: codeList(COMPLEXIONS),
+        religiousPracticeCodes: codeList(RELIGIOUS_PRACTICES),
+        dietaryPreferenceCodes: codeList(DIETARY_PREFERENCES),
+        smokingCodes: codeList(SMOKING_HABITS),
+        childrenCodes: codeList(CHILDREN_STATUSES),
+        relocationCodes: codeList(RELOCATION_OPTIONS),
       })
       .strict()
       .superRefine((value, ctx) => {

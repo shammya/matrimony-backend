@@ -12,6 +12,9 @@ import {
   config,
   unusedAccess,
   unusedClients,
+  unusedCandidates,
+  unusedMatches,
+  unusedConnections,
   unusedPhotos,
   unusedProfiles,
   unusedReviews,
@@ -62,6 +65,9 @@ async function setup(role: 'admin' | 'agent' | 'member' = 'admin', fail?: AppErr
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    candidates: unusedCandidates,
+    matches: unusedMatches,
+    connections: unusedConnections,
     registrations: { signInMethods: async () => null },
     identities: {
       tenant: async () => ({

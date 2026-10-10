@@ -59,6 +59,34 @@ export const FAMILY_STATUSES = [
 export const RELIGIOUS_PRACTICES = ['practicing', 'moderate', 'non_practicing'] as const;
 export const DIETARY_PREFERENCES = ['no_restriction', 'halal_only', 'vegetarian', 'other'] as const;
 
+/** What the person does for a living. `OCCUPATIONS` above is only the type of work. */
+export const PROFESSIONS = [
+  'doctor',
+  'nurse',
+  'engineer',
+  'teacher',
+  'lecturer',
+  'banker',
+  'accountant',
+  'lawyer',
+  'civil_servant',
+  'military_police',
+  'it_professional',
+  'business_owner',
+  'farmer',
+  'journalist',
+  'designer_artist',
+  'other',
+] as const;
+
+export const SMOKING_HABITS = ['never', 'occasionally', 'regularly'] as const;
+
+/** Whether the person already has children, and where they live. */
+export const CHILDREN_STATUSES = ['none', 'has_living_with', 'has_not_living_with'] as const;
+
+/** Whether the person would move for marriage. */
+export const RELOCATION_OPTIONS = ['no', 'within_country', 'abroad'] as const;
+
 /** Who the profile is for, when it is not the account holder. */
 export const MANAGED_FOR = ['self', 'child', 'sibling', 'relative', 'other'] as const;
 

@@ -52,6 +52,16 @@ import { ReviewProcess } from './process/review-process.js';
 import { ClientRepository } from './db/raw/repository/client-repository.js';
 import { ClientDbService } from './db/service/client-db-service.js';
 import { ClientService } from './service/client-service.js';
+import { CandidateRepository } from './db/raw/repository/candidate-repository.js';
+import { CandidateDbService } from './db/service/candidate-db-service.js';
+import { CandidateService } from './service/candidate-service.js';
+import { MatchRepository } from './db/raw/repository/match-repository.js';
+import { MatchDbService } from './db/service/match-db-service.js';
+import { MatchService } from './service/match-service.js';
+import { MatchProcess } from './process/match-process.js';
+import { ConnectionRepository } from './db/raw/repository/connection-repository.js';
+import { ConnectionDbService } from './db/service/connection-db-service.js';
+import { ConnectionService } from './service/connection-service.js';
 import { EventDeliveryProcess } from './process/event-delivery-process.js';
 /** The console driver is for development only: the configuration refuses it in production. */
 function createMailer(config: AppConfig): Mailer {
@@ -80,6 +90,10 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
     const storage = createFileStorage(config);
     const profiles = new ProfileService(
       new ProfileDbService(db, new ProfileRepository(), new EventRepository()),
+    );
+    const candidates = new CandidateService(
+      new CandidateDbService(db, new CandidateRepository(), new EventRepository()),
+      logger,
     );
     const identities = new IdentityService(
       new IdentityDbService(db, new IdentityRepository()),
@@ -200,6 +214,22 @@ export async function createApiContainer(config: AppConfig, logger: Logger) {
             new EventRepository(),
           ),
         ),
+        storage,
+        candidates,
+        logger,
+      ),
+      candidates,
+      connections: new ConnectionService(
+        new ConnectionDbService(
+          db,
+          new ConnectionRepository(),
+          new MatchRepository(),
+          new CandidateRepository(),
+          new EventRepository(),
+        ),
+      ),
+      matches: new MatchProcess(
+        new MatchService(new MatchDbService(db, new MatchRepository(), new CandidateRepository())),
         storage,
       ),
       clients: new ClientService(

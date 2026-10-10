@@ -22,6 +22,12 @@ import { registerProfileController } from './profile-controller.js';
 import { registerPhotoController } from './photo-controller.js';
 import { registerReviewController } from './review-controller.js';
 import { registerClientController } from './client-controller.js';
+import { registerCandidateController } from './candidate-controller.js';
+import { registerMatchController } from './match-controller.js';
+import { registerConnectionController } from './connection-controller.js';
+import type { ConnectionService } from '../service/connection-service.js';
+import type { MatchProcess } from '../process/match-process.js';
+import type { CandidateService } from '../service/candidate-service.js';
 import { registerStaffController } from './staff-controller.js';
 import type { ReviewProcess } from '../process/review-process.js';
 import type { ClientService } from '../service/client-service.js';
@@ -43,6 +49,23 @@ export interface AppDependencies {
     | 'changeStatus'
     | 'assign'
     | 'listStaff'
+  >;
+  matches: Pick<MatchProcess, 'page' | 'detail' | 'photo'>;
+  connections: Pick<
+    ConnectionService,
+    | 'send'
+    | 'respond'
+    | 'withdraw'
+    | 'shareContact'
+    | 'list'
+    | 'notifications'
+    | 'staffList'
+    | 'staffRespond'
+    | 'staffShareContact'
+  >;
+  candidates: Pick<
+    CandidateService,
+    'generate' | 'list' | 'settings' | 'saveSettings' | 'release' | 'remove'
   >;
   config: AppConfig;
   logger: Logger;
@@ -205,6 +228,9 @@ export async function buildApp(deps: AppDependencies) {
   registerPhotoController(app, deps.photos);
   registerReviewController(app, deps.reviews);
   registerClientController(app, deps.clients);
+  registerCandidateController(app, deps.candidates);
+  registerMatchController(app, deps.matches);
+  registerConnectionController(app, deps.connections);
   registerStaffController(app, deps.invitations);
   return app;
 }

@@ -12,6 +12,8 @@ import {
   config,
   unusedPhotos,
   unusedProfiles,
+  unusedMatches,
+  unusedConnections,
   authFor,
   unusedInvitations,
   unusedAccess,
@@ -96,6 +98,26 @@ async function setup(role: 'admin' | 'agent' | 'member' = 'agent') {
       assign: record('clients.assign', clientDetail),
       listStaff: record('clients.staff', []),
     },
+    candidates: {
+      generate: record('candidates.generate', { considered: 0, proposed: 0, items: [] }),
+      list: record('candidates.list', { items: [] }),
+      settings: record('candidates.settings', {
+        cap: 50,
+        visibleFields: ['fullName'],
+        releasedCount: 0,
+        isDefault: true,
+      }),
+      saveSettings: record('candidates.saveSettings', {
+        cap: 40,
+        visibleFields: ['fullName'],
+        releasedCount: 0,
+        isDefault: false,
+      }),
+      release: record('candidates.release', { done: [], skipped: [] }),
+      remove: record('candidates.remove', { done: [], skipped: [] }),
+    },
+    matches: unusedMatches,
+    connections: unusedConnections,
     registrations: { signInMethods: async () => null },
     identities: {
       tenant: async () => ({
@@ -162,6 +184,27 @@ const ROUTES: [string, string, unknown, ('admin' | 'agent')[]][] = [
   ],
   ['PUT', `/api/v1/staff/clients/${ID}/assignment`, { agentId: null }, ['admin']],
   ['GET', '/api/v1/admin/staff', undefined, ['admin']],
+  ['POST', `/api/v1/staff/clients/${ID}/candidates/generate`, undefined, ['admin', 'agent']],
+  ['GET', `/api/v1/staff/clients/${ID}/candidates`, undefined, ['admin', 'agent']],
+  ['GET', `/api/v1/staff/clients/${ID}/release-settings`, undefined, ['admin', 'agent']],
+  [
+    'PUT',
+    `/api/v1/staff/clients/${ID}/release-settings`,
+    { cap: 40, visibleFields: ['fullName'] },
+    ['admin', 'agent'],
+  ],
+  [
+    'POST',
+    `/api/v1/staff/clients/${ID}/candidates/release`,
+    { candidateIds: [ID] },
+    ['admin', 'agent'],
+  ],
+  [
+    'POST',
+    `/api/v1/staff/clients/${ID}/candidates/remove`,
+    { candidateIds: [ID] },
+    ['admin', 'agent'],
+  ],
 ];
 
 await test('members cannot reach any staff route, and nobody can without signing in', async (t) => {
@@ -186,6 +229,79 @@ await test('staff routes are open to the roles meant for them, and only those', 
       else assert.equal(res.statusCode, 403, `${role} ${method} ${url}`);
     }
   }
+});
+
+await test('a candidate list takes a state and a size, and refuses nonsense', async (t) => {
+  const { app, call, calls } = await setup('agent');
+  t.after(() => app.close());
+  await call('GET', `/api/v1/staff/clients/${ID}/candidates`);
+  assert.deepEqual(calls[0]?.args[1], { state: 'proposed', limit: 100 });
+  await call('GET', `/api/v1/staff/clients/${ID}/candidates?state=removed&limit=5`);
+  assert.deepEqual(calls[1]?.args[1], { state: 'removed', limit: 5 });
+  for (const bad of ['state=weird', 'limit=0', 'limit=201', 'limit=x', 'extra=1']) {
+    assert.equal(
+      (await call('GET', `/api/v1/staff/clients/${ID}/candidates?${bad}`)).statusCode,
+      400,
+      bad,
+    );
+  }
+  assert.equal((await call('GET', '/api/v1/staff/clients/not-an-id/candidates')).statusCode, 400);
+  assert.equal(calls.length, 2);
+});
+
+await test('settings and release bodies are checked, and what the client sends is cleaned', async (t) => {
+  const { app, call, calls } = await setup('agent');
+  t.after(() => app.close());
+  const url = `/api/v1/staff/clients/${ID}`;
+  // The fields come back unique and in the list's own order.
+  await call('PUT', `${url}/release-settings`, {
+    cap: 30,
+    visibleFields: ['photo', 'fullName', 'photo'],
+  });
+  assert.deepEqual(calls[0]?.args[1], { cap: 30, visibleFields: ['fullName', 'photo'] });
+  for (const bad of [
+    { cap: 0, visibleFields: ['fullName'] },
+    { cap: 201, visibleFields: ['fullName'] },
+    { cap: 1.5, visibleFields: ['fullName'] },
+    { cap: 10, visibleFields: [] },
+    { cap: 10, visibleFields: ['phone'] },
+    { cap: 10, visibleFields: ['internalNotes'] },
+    { cap: 10, visibleFields: ['fullName'], extra: 1 },
+    { visibleFields: ['fullName'] },
+  ]) {
+    assert.equal(
+      (await call('PUT', `${url}/release-settings`, bad)).statusCode,
+      400,
+      JSON.stringify(bad),
+    );
+  }
+  await call('POST', `${url}/candidates/release`, { candidateIds: [ID, ID] });
+  assert.deepEqual(calls[1]?.args[1], { candidateIds: [ID] });
+  for (const bad of [
+    {},
+    { candidateIds: [] },
+    { candidateIds: ['x'] },
+    { candidateIds: [ID], extra: 1 },
+  ]) {
+    for (const action of ['release', 'remove']) {
+      assert.equal(
+        (await call('POST', `${url}/candidates/${action}`, bad)).statusCode,
+        400,
+        `${action} ${JSON.stringify(bad)}`,
+      );
+    }
+  }
+  assert.equal(calls.length, 2);
+});
+
+await test('generating takes no body from the client and answers with the proposals', async (t) => {
+  const { app, call, calls } = await setup('agent');
+  t.after(() => app.close());
+  const res = await call('POST', `/api/v1/staff/clients/${ID}/candidates/generate`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { considered: 0, proposed: 0, items: [] });
+  assert.equal(calls[0]?.name, 'candidates.generate');
+  assert.equal(calls[0]?.args[0], ID);
 });
 
 await test('the agency and account come from the session, never from the request', async (t) => {

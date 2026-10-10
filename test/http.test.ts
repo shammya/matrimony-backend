@@ -13,6 +13,9 @@ import {
   unusedPhotos,
   unusedReviews,
   unusedClients,
+  unusedCandidates,
+  unusedMatches,
+  unusedConnections,
   unusedInvitations,
   unusedProfiles,
 } from './fixtures.js';
@@ -33,6 +36,9 @@ await test('HTTP routes default to JWT protection, enforce roles, and expose saf
     photos: unusedPhotos,
     reviews: unusedReviews,
     clients: unusedClients,
+    candidates: unusedCandidates,
+    matches: unusedMatches,
+    connections: unusedConnections,
     invitations: unusedInvitations,
     registrations: { signInMethods: async () => null },
     identities: {

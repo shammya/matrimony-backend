@@ -27,6 +27,8 @@ tags:
   - name: My photos
   - name: Review queue
   - name: Clients
+  - name: Matches
+  - name: Connections
   - name: Staff
 
 paths:
@@ -1623,6 +1625,527 @@ paths:
             description: 'AGENT_NOT_AVAILABLE.',
             content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
           }
+  /api/v1/me/matches:
+    get:
+      tags: [Matches]
+      summary: My matches
+      description: |
+        A member's own matches: the profiles staff released to them, newest release first, with only
+        the fields staff chose for them (see ReleaseSettings). Nothing outside the released set is
+        reachable. The filters search inside that set; a filter on a field the member may not see is
+        refused with FILTER_NOT_AVAILABLE, so a hidden value cannot be found out. A member whose own
+        profile is not published yet gets an empty list and their profileStatus.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: q, in: query, description: A member code, schema: { type: string, maxLength: 20 } }
+        - { name: ageMin, in: query, schema: { type: integer, minimum: 18, maximum: 100 } }
+        - { name: ageMax, in: query, schema: { type: integer, minimum: 18, maximum: 100 } }
+        - { name: religion, in: query, schema: { $ref: '#/components/schemas/Religion' } }
+        - { name: maritalStatus, in: query, schema: { $ref: '#/components/schemas/MaritalStatus' } }
+        - { name: profession, in: query, schema: { $ref: '#/components/schemas/Profession' } }
+        - { name: district, in: query, schema: { $ref: '#/components/schemas/District' } }
+        - { name: educationMin, in: query, description: The lowest education level wanted, schema: { $ref: '#/components/schemas/EducationLevel' } }
+        - { name: heightMin, in: query, description: Advanced search, schema: { type: integer, minimum: 100, maximum: 250 } }
+        - { name: heightMax, in: query, description: Advanced search, schema: { type: integer, minimum: 100, maximum: 250 } }
+        - { name: incomeMin, in: query, description: Advanced search, schema: { $ref: '#/components/schemas/IncomeBand' } }
+        - { name: incomeMax, in: query, description: Advanced search, schema: { $ref: '#/components/schemas/IncomeBand' } }
+        - { name: familyStatusMin, in: query, description: Advanced search, schema: { $ref: '#/components/schemas/FamilyStatus' } }
+        - { name: originDistrict, in: query, description: Advanced search, schema: { $ref: '#/components/schemas/District' } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+        - { name: after, in: query, description: The next value of the previous page, schema: { type: string } }
+      responses:
+        '200':
+          description: One page of matches.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MatchPage' }
+        '400':
+          {
+            description: 'Invalid input, or FILTER_NOT_AVAILABLE (details.fields names the filters the member may not use).',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+  /api/v1/me/matches/{candidateId}:
+    get:
+      tags: [Matches]
+      summary: The full view of a profile
+      description: |
+        Every field staff allowed this member to see, for someone in their released window, someone they
+        are connected to, or someone who asked to connect with them and is waiting for an answer. The
+        contact is present only when the other person shared it after the connection was accepted, and
+        never includes an address.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: candidateId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileDetail' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND: not theirs to look at, or no longer published.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/matches/{candidateId}/photo:
+    get:
+      tags: [Matches]
+      summary: The photo of a match
+      description: |
+        The main published photo of a profile in the member's window, as WebP. Only when staff allow
+        photos for this member. Private to the browser, so it is requested with the access token.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: candidateId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: size, in: query, schema: { type: string, enum: [thumb, full], default: thumb } }
+      responses:
+        '200':
+          description: The picture.
+          content:
+            image/webp:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PHOTO_NOT_FOUND: no photo, not in the window, or photos are not shown to this member.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/connections:
+    post:
+      tags: [Connections]
+      summary: Ask to connect
+      description: |
+        A member with a published profile asks someone in their released window. There is one connection
+        per pair: asking again while waiting changes nothing, and two people asking each other end as one
+        accepted connection (outcome accepted, both are told). A declined pair stays declined. A
+        withdrawn request can be asked again. The person asked is told in their inbox; a client with no
+        login is answered for by the agent who looks after them.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionRequestInput' }
+      responses:
+        '200':
+          description: What happened.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionResult' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND: not in the window, unknown, or oneself.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_NOT_PUBLISHED, or CONNECTION_DECLINED.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+    get:
+      tags: [Connections]
+      summary: My connections
+      description: |
+        received: waiting for my answer. sent: waiting for theirs. connected: accepted. The other person
+        is shown with only the fields staff allowed this member.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: box, in: query, schema: { type: string, enum: [received, sent, connected], default: received } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+        - { name: after, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionPage' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+  /api/v1/me/connections/{connectionId}/respond:
+    post:
+      tags: [Connections]
+      summary: Answer a request made to me
+      description: Only the person asked answers, once.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: connectionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionResponseInput' }
+      responses:
+        '204': { description: Answered. }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'CONNECTION_NOT_FOUND',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'CONNECTION_NOT_PENDING',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/connections/{connectionId}/withdraw:
+    post:
+      tags: [Connections]
+      summary: Take back a request I made
+      description: Only the person who asked, and only while it has not been answered.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: connectionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Withdrawn. }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'CONNECTION_NOT_FOUND',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'CONNECTION_NOT_PENDING',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/connections/{connectionId}/share-contact:
+    post:
+      tags: [Connections]
+      summary: Share my contact details
+      description: |
+        After a connection is accepted, a member may share their own contact details with the other
+        person. Only the member can say so for themselves. The address is never shared.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: connectionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Shared. }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'CONNECTION_NOT_FOUND',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'CONNECTION_NOT_ACCEPTED',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me/notifications:
+    get:
+      tags: [Connections]
+      summary: My inbox
+      description: |
+        Newest first. For a member, what happened to them. For staff, what happened to the clients they
+        look after. A name is present only if the member may see names. There is no read or unread state.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+        - { name: after, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationPage' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+  /api/v1/staff/clients/{profileId}/connections:
+    get:
+      tags: [Clients]
+      summary: A client's connections
+      description: Staff only. Every connection of this client, with the other person's name and code. No contact details.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The connections.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffConnectionList' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/connections/{connectionId}/respond:
+    post:
+      tags: [Clients]
+      summary: Answer a request for a client who has no login
+      description: Staff only, for a client the agency runs. A member who runs their own profile answers for themselves (PROFILE_SELF_SERVICE).
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: connectionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionResponseInput' }
+      responses:
+        '204': { description: Answered. }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND or CONNECTION_NOT_FOUND',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'CONNECTION_NOT_PENDING',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/connections/{connectionId}/share-contact:
+    post:
+      tags: [Clients]
+      summary: Share an assisted client's contact details
+      description: Staff only, once the client agrees. The address is never shared.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: connectionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Shared. }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND or CONNECTION_NOT_FOUND',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'CONNECTION_NOT_ACCEPTED',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/candidates/generate:
+    post:
+      tags: [Clients]
+      summary: Find candidates for a client
+      description: |
+        Staff only. Measures the agency's published profiles of the other gender against the client's
+        partner preferences, and the client against theirs, and saves the best (at most 100) as
+        proposals for staff to review. Running again adds and refreshes proposals; what staff already
+        released or removed is never touched, and a proposal that no longer ranks among the best
+        lapses. A mismatch lowers a candidate but never removes it. Complexion is never used. Nothing
+        here is shown to the client. Also runs by itself after staff approve a profile's first
+        submission or a change.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The proposals after this run, best first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CandidateGeneration' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND, also when an agent may not manage the client.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'PROFILE_NOT_PUBLISHED: only a published client can have a list.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '422':
+          {
+            description: 'CLIENT_GENDER_REQUIRED.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/candidates:
+    get:
+      tags: [Clients]
+      summary: A client's candidate list
+      description: Staff only. The candidates in one state, best fit first. No contact details.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: state, in: query, schema: { $ref: '#/components/schemas/CandidateState' } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 100 } }
+      responses:
+        '200':
+          description: The candidates.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CandidateList' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND, also when an agent may not manage the client.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/release-settings:
+    get:
+      tags: [Clients]
+      summary: What a client may see
+      description: |
+        Staff only. The client's cap (how many released profiles their window holds), the fields of a
+        released profile they will see, and how full the window is. A client with nothing set yet gets
+        the defaults (isDefault is true).
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReleaseSettings' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND, also when an agent may not manage the client.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+    put:
+      tags: [Clients]
+      summary: Set what a client may see
+      description: |
+        Staff only. The cap may not go below what is already released (remove some first). Contact
+        details and internal notes are not in the list of fields and can never be shown to a client.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseSettingsInput' }
+      responses:
+        '200':
+          description: The settings now in force.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReleaseSettings' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND, also when an agent may not manage the client.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'CAP_BELOW_RELEASED, with details.released.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/candidates/release:
+    post:
+      tags: [Clients]
+      summary: Release candidates to the client
+      description: |
+        Staff only. Moves proposed candidates into the client's window. Only profiles that are still
+        proposed and still published move; the others come back in skipped. If more would move than
+        there is room for, nothing moves (CAP_REACHED, with details.cap and details.room).
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CandidateIdsInput' }
+      responses:
+        '200':
+          description: What moved and what did not.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CandidateOutcome' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND, also when an agent may not manage the client.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: 'CAP_REACHED.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/staff/clients/{profileId}/candidates/remove:
+    post:
+      tags: [Clients]
+      summary: Remove candidates for good
+      description: |
+        Staff only. Removes proposed, lapsed or released candidates. A removed candidate never comes
+        back from a later run and leaves the client's window, freeing a place.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: profileId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CandidateIdsInput' }
+      responses:
+        '200':
+          description: What was removed and what was not (already removed or unknown).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CandidateOutcome' }
+        '400': { $ref: '#/components/responses/Error400' }
+        '401': { $ref: '#/components/responses/Error401' }
+        '403': { $ref: '#/components/responses/Error403' }
+        '404':
+          {
+            description: 'PROFILE_NOT_FOUND, also when an agent may not manage the client.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
   /api/v1/admin/staff:
     get:
       tags: [Clients]
@@ -1890,6 +2413,36 @@ components:
     DietaryPreference:
       type: string
       enum: [no_restriction, halal_only, vegetarian, other]
+    Profession:
+      type: string
+      enum:
+        [
+          doctor,
+          nurse,
+          engineer,
+          teacher,
+          lecturer,
+          banker,
+          accountant,
+          lawyer,
+          civil_servant,
+          military_police,
+          it_professional,
+          business_owner,
+          farmer,
+          journalist,
+          designer_artist,
+          other,
+        ]
+    SmokingHabit:
+      type: string
+      enum: [never, occasionally, regularly]
+    ChildrenStatus:
+      type: string
+      enum: [none, has_living_with, has_not_living_with]
+    RelocationOption:
+      type: string
+      enum: [no, within_country, abroad]
     ManagedFor:
       type: string
       enum: [self, child, sibling, relative, other]
@@ -2016,6 +2569,11 @@ components:
           { anyOf: [{ $ref: '#/components/schemas/ReligiousPractice' }, { type: 'null' }] }
         dietaryPreferenceCode:
           { anyOf: [{ $ref: '#/components/schemas/DietaryPreference' }, { type: 'null' }] }
+        professionCode: { anyOf: [{ $ref: '#/components/schemas/Profession' }, { type: 'null' }] }
+        smokingCode: { anyOf: [{ $ref: '#/components/schemas/SmokingHabit' }, { type: 'null' }] }
+        childrenCode: { anyOf: [{ $ref: '#/components/schemas/ChildrenStatus' }, { type: 'null' }] }
+        relocationCode:
+          { anyOf: [{ $ref: '#/components/schemas/RelocationOption' }, { type: 'null' }] }
         hobbies: { type: [string, 'null'], maxLength: 500 }
         aboutMe: { type: [string, 'null'], maxLength: 2000 }
 
@@ -2057,6 +2615,15 @@ components:
           { anyOf: [{ $ref: '#/components/schemas/IncomeBand' }, { type: 'null' }] }
         familyStatusMinCode:
           { anyOf: [{ $ref: '#/components/schemas/FamilyStatus' }, { type: 'null' }] }
+        professionCodes: { type: array, items: { $ref: '#/components/schemas/Profession' } }
+        complexionCodes: { type: array, items: { $ref: '#/components/schemas/Complexion' } }
+        religiousPracticeCodes:
+          { type: array, items: { $ref: '#/components/schemas/ReligiousPractice' } }
+        dietaryPreferenceCodes:
+          { type: array, items: { $ref: '#/components/schemas/DietaryPreference' } }
+        smokingCodes: { type: array, items: { $ref: '#/components/schemas/SmokingHabit' } }
+        childrenCodes: { type: array, items: { $ref: '#/components/schemas/ChildrenStatus' } }
+        relocationCodes: { type: array, items: { $ref: '#/components/schemas/RelocationOption' } }
 
     ProfileData:
       type: object
@@ -2555,6 +3122,321 @@ components:
       required: [pending]
       properties:
         pending: { type: integer }
+    CandidateState:
+      type: string
+      description: |
+        proposed: the system suggests it. lapsed: it no longer ranks among the best (it can return).
+        released and removed are staff decisions.
+      enum: [proposed, lapsed, released, removed]
+    CriterionKey:
+      type: string
+      enum:
+        [
+          age,
+          height,
+          religion,
+          sect,
+          maritalStatus,
+          education,
+          occupation,
+          profession,
+          district,
+          income,
+          familyStatus,
+          religiousPractice,
+          diet,
+          smoking,
+          children,
+          relocation,
+        ]
+    CriterionResult:
+      type: object
+      additionalProperties: false
+      required: [key, outcome]
+      description: One stated preference and whether the other profile fits it. unknown means it has not answered.
+      properties:
+        key: { $ref: '#/components/schemas/CriterionKey' }
+        outcome: { type: string, enum: [met, unmet, unknown] }
+    CandidateItem:
+      type: object
+      additionalProperties: false
+      required:
+        [candidateId, memberCode, fullName, age, professionCode, occupationCode, currentDistrictCode,
+         religionCode, maritalStatus, profileStatus, state, met, unmet, unknown, forward, reverse, proposedAt]
+      properties:
+        candidateId: { type: string, format: uuid }
+        memberCode: { type: string }
+        fullName: { type: string }
+        age: { type: [integer, 'null'] }
+        professionCode: { type: [string, 'null'] }
+        occupationCode: { type: [string, 'null'] }
+        currentDistrictCode: { type: [string, 'null'] }
+        religionCode: { type: [string, 'null'] }
+        maritalStatus: { type: [string, 'null'] }
+        profileStatus: { type: string, description: The candidate profile's own status now. }
+        state: { $ref: '#/components/schemas/CandidateState' }
+        met: { type: integer, description: Criteria met, both directions together. }
+        unmet: { type: integer }
+        unknown: { type: integer }
+        forward:
+          type: array
+          description: The candidate measured against the client's preferences.
+          items: { $ref: '#/components/schemas/CriterionResult' }
+        reverse:
+          type: array
+          description: The client measured against the candidate's own preferences.
+          items: { $ref: '#/components/schemas/CriterionResult' }
+        proposedAt: { type: string, format: date-time }
+    VisibleField:
+      type: string
+      description: A field of a released profile that staff may show to a client.
+      enum:
+        [
+          fullName,
+          age,
+          photo,
+          aboutMe,
+          professionCode,
+          occupationCode,
+          highestDegreeCode,
+          heightCm,
+          maritalStatus,
+          religionCode,
+          currentDistrictCode,
+          originDistrictCode,
+          monthlyIncomeBandCode,
+          familyStatusCode,
+          hobbies,
+        ]
+    ReleaseSettings:
+      type: object
+      additionalProperties: false
+      required: [cap, visibleFields, releasedCount, isDefault]
+      properties:
+        cap: { type: integer, minimum: 1, maximum: 200 }
+        visibleFields:
+          type: array
+          items: { $ref: '#/components/schemas/VisibleField' }
+        releasedCount: { type: integer, description: How many profiles are in the client's window now. }
+        isDefault: { type: boolean, description: True when staff have not set anything yet. }
+    ReleaseSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [cap, visibleFields]
+      properties:
+        cap: { type: integer, minimum: 1, maximum: 200 }
+        visibleFields:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/VisibleField' }
+    CandidateIdsInput:
+      type: object
+      additionalProperties: false
+      required: [candidateIds]
+      properties:
+        candidateIds:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { type: string, format: uuid }
+    CandidateOutcome:
+      type: object
+      additionalProperties: false
+      required: [done, skipped]
+      properties:
+        done: { type: array, items: { type: string, format: uuid } }
+        skipped: { type: array, items: { type: string, format: uuid } }
+    MatchItem:
+      type: object
+      additionalProperties: false
+      required: [candidateId, memberCode, connection]
+      description: |
+        A released profile. Only the fields staff chose are present; every other key is absent.
+        Contact details and internal notes are never present.
+      properties:
+        candidateId: { type: string, format: uuid }
+        memberCode: { type: string }
+        fullName: { type: string }
+        age: { type: [integer, 'null'] }
+        hasPhoto: { type: boolean }
+        aboutMe: { type: [string, 'null'] }
+        professionCode: { anyOf: [{ $ref: '#/components/schemas/Profession' }, { type: 'null' }] }
+        occupationCode: { anyOf: [{ $ref: '#/components/schemas/Occupation' }, { type: 'null' }] }
+        highestDegreeCode: { anyOf: [{ $ref: '#/components/schemas/Degree' }, { type: 'null' }] }
+        heightCm: { type: [integer, 'null'] }
+        maritalStatus: { anyOf: [{ $ref: '#/components/schemas/MaritalStatus' }, { type: 'null' }] }
+        religionCode: { anyOf: [{ $ref: '#/components/schemas/Religion' }, { type: 'null' }] }
+        currentDistrictCode: { anyOf: [{ $ref: '#/components/schemas/District' }, { type: 'null' }] }
+        originDistrictCode: { anyOf: [{ $ref: '#/components/schemas/District' }, { type: 'null' }] }
+        monthlyIncomeBandCode: { anyOf: [{ $ref: '#/components/schemas/IncomeBand' }, { type: 'null' }] }
+        familyStatusCode: { anyOf: [{ $ref: '#/components/schemas/FamilyStatus' }, { type: 'null' }] }
+        hobbies: { type: [string, 'null'] }
+        connection:
+          anyOf: [{ $ref: '#/components/schemas/ConnectionSummary' }, { type: 'null' }]
+          description: Where a connection with this person stands, from the viewer's side.
+    ConnectionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, status, direction]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, accepted, declined, withdrawn] }
+        direction: { type: string, enum: [sent, received], description: 'sent: I asked. received: they asked.' }
+    ProfileDetail:
+      type: object
+      additionalProperties: false
+      required: [profile, connection, contact, visibleFields]
+      properties:
+        profile: { $ref: '#/components/schemas/MatchItem' }
+        connection:
+          anyOf:
+            - type: object
+              additionalProperties: false
+              required: [id, status, direction, iSharedContact, theySharedContact]
+              properties:
+                id: { type: string, format: uuid }
+                status: { type: string, enum: [pending, accepted, declined, withdrawn] }
+                direction: { type: string, enum: [sent, received] }
+                iSharedContact: { type: boolean }
+                theySharedContact: { type: boolean }
+            - { type: 'null' }
+        contact:
+          anyOf:
+            - type: object
+              additionalProperties: false
+              required: [name, relationship, phone, email]
+              description: What the other person chose to share. Never an address.
+              properties:
+                name: { type: [string, 'null'] }
+                relationship: { type: [string, 'null'] }
+                phone: { type: [string, 'null'] }
+                email: { type: [string, 'null'] }
+            - { type: 'null' }
+        visibleFields: { type: array, items: { $ref: '#/components/schemas/VisibleField' } }
+    ConnectionRequestInput:
+      type: object
+      additionalProperties: false
+      required: [candidateId]
+      properties:
+        candidateId: { type: string, format: uuid }
+    ConnectionResponseInput:
+      type: object
+      additionalProperties: false
+      required: [response]
+      properties:
+        response: { type: string, enum: [accept, decline] }
+    ConnectionResult:
+      type: object
+      additionalProperties: false
+      required: [outcome, connectionId, status]
+      properties:
+        outcome: { type: string, enum: [requested, accepted, unchanged] }
+        connectionId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, accepted, declined, withdrawn] }
+    ConnectionRow:
+      type: object
+      additionalProperties: false
+      required: [connectionId, status, direction, createdAt, respondedAt, iSharedContact, theySharedContact, profile]
+      properties:
+        connectionId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, accepted, declined, withdrawn] }
+        direction: { type: string, enum: [sent, received] }
+        createdAt: { type: string, format: date-time }
+        respondedAt: { type: [string, 'null'], format: date-time }
+        iSharedContact: { type: boolean }
+        theySharedContact: { type: boolean }
+        profile: { $ref: '#/components/schemas/MatchItem' }
+    ConnectionPage:
+      type: object
+      additionalProperties: false
+      required: [items, next]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ConnectionRow' } }
+        next: { type: [string, 'null'] }
+    NotificationItem:
+      type: object
+      additionalProperties: false
+      required: [id, kind, createdAt, connectionId, forProfileId, about]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [connection_request, connection_accepted, connection_declined] }
+        createdAt: { type: string, format: date-time }
+        connectionId: { type: string, format: uuid }
+        forProfileId: { type: string, format: uuid, description: "The profile this is about for the recipient: their own, or the client they look after." }
+        about:
+          type: object
+          additionalProperties: false
+          required: [profileId, memberCode, fullName]
+          properties:
+            profileId: { type: string, format: uuid }
+            memberCode: { type: string }
+            fullName: { type: [string, 'null'], description: Null when the recipient may not see names. }
+    NotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, next]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/NotificationItem' } }
+        next: { type: [string, 'null'] }
+    StaffConnection:
+      type: object
+      additionalProperties: false
+      required: [connectionId, status, direction, createdAt, respondedAt, clientSharedContact, otherSharedContact, other]
+      properties:
+        connectionId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, accepted, declined, withdrawn] }
+        direction: { type: string, enum: [sent, received], description: From the client's side. }
+        createdAt: { type: string, format: date-time }
+        respondedAt: { type: [string, 'null'], format: date-time }
+        clientSharedContact: { type: boolean }
+        otherSharedContact: { type: boolean }
+        other:
+          type: object
+          additionalProperties: false
+          required: [profileId, memberCode, fullName, age, professionCode, currentDistrictCode, serviceMode]
+          properties:
+            profileId: { type: string, format: uuid }
+            memberCode: { type: string }
+            fullName: { type: string }
+            age: { type: [integer, 'null'] }
+            professionCode: { type: [string, 'null'] }
+            currentDistrictCode: { type: [string, 'null'] }
+            serviceMode: { type: string, enum: [self_service, assisted] }
+    StaffConnectionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/StaffConnection' } }
+    MatchPage:
+      type: object
+      additionalProperties: false
+      required: [items, next, profileStatus, releasedTotal, visibleFields]
+      properties:
+        visibleFields:
+          type: array
+          description: "The fields staff let this member see: what a card may show and what can be searched."
+          items: { $ref: '#/components/schemas/VisibleField' }
+        items: { type: array, items: { $ref: '#/components/schemas/MatchItem' } }
+        next: { type: [string, 'null'], description: Pass as after to get the next page. }
+        profileStatus:
+          anyOf: [{ $ref: '#/components/schemas/ProfileStatus' }, { type: 'null' }]
+          description: The member's own profile status, or null when they have none yet.
+        releasedTotal: { type: integer, description: Profiles released to them in all, whatever the filter. }
+    CandidateList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CandidateItem' } }
+    CandidateGeneration:
+      type: object
+      additionalProperties: false
+      required: [considered, proposed, items]
+      properties:
+        considered: { type: integer, description: Published profiles that were measured. }
+        proposed: { type: integer, description: Proposals saved by this run. }
+        items: { type: array, items: { $ref: '#/components/schemas/CandidateItem' } }
     ClientListItem:
       type: object
       required:

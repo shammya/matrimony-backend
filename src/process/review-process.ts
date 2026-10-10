@@ -7,14 +7,17 @@ import type {
   RejectInput,
   ReviewDetail,
 } from '../bo/review.js';
+import type { Logger } from 'pino';
 import { AppError } from '../exception/app-error.js';
+import type { CandidateService } from '../service/candidate-service.js';
 import type { ProfileActor } from '../service/profile-service.js';
 import type { ReviewService } from '../service/review-service.js';
 import type { FileStorage } from '../storage/service/file-storage.js';
 
 /**
- * The approval queue as the API uses it. The decisions are the service's; this adds the one thing
- * that needs the file storage: showing a reviewer the photo they are asked to approve.
+ * The approval queue as the API uses it. The decisions are the service's; this adds showing a
+ * reviewer the photo they are asked to approve (file storage), and refreshing a profile's candidate
+ * list once an approval that changes its content has been committed.
  */
 export class ReviewProcess {
   constructor(
@@ -23,6 +26,8 @@ export class ReviewProcess {
       'list' | 'pendingCount' | 'detail' | 'approve' | 'reject' | 'photoKey'
     >,
     private readonly storage: FileStorage,
+    private readonly candidates: Pick<CandidateService, 'refresh'>,
+    private readonly logger: Logger,
   ) {}
 
   list(actor: ProfileActor, query: ListQuery): Promise<QueuePage> {
@@ -37,13 +42,16 @@ export class ReviewProcess {
     return this.reviews.detail(actor, reviewId);
   }
 
-  approve(
+  async approve(
     actor: ProfileActor,
     reviewId: string,
     input: ApproveInput,
     correlationId: string,
   ): Promise<ReviewDetail> {
-    return this.reviews.approve(actor, reviewId, input, correlationId);
+    const detail = await this.reviews.approve(actor, reviewId, input, correlationId);
+    // A photo does not change anyone's preferences. A first submission or a change can.
+    if (detail.kind !== 'photo_add') await this.refreshCandidates(actor, detail.profile.id);
+    return detail;
   }
 
   reject(
@@ -53,6 +61,21 @@ export class ReviewProcess {
     correlationId: string,
   ): Promise<ReviewDetail> {
     return this.reviews.reject(actor, reviewId, input, correlationId);
+  }
+
+  /**
+   * Runs after the approval has committed, in its own transaction, so a failure here can never undo
+   * the approval. The list is simply refreshed the next time staff press "Find candidates".
+   */
+  private async refreshCandidates(actor: ProfileActor, profileId: string) {
+    try {
+      await this.candidates.refresh(actor.agencyId, profileId);
+    } catch (error) {
+      this.logger.error(
+        { code: 'CANDIDATE_REFRESH_FAILED', agencyId: actor.agencyId, profileId, err: error },
+        'candidate refresh failed after approval',
+      );
+    }
   }
 
   /** The bytes of one size of the photo a request is about. */

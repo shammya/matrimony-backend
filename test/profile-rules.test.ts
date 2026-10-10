@@ -90,6 +90,49 @@ await test('dates of birth: format, real calendar dates and the age limits', () 
   assert.deepEqual(dob('1925-10-06'), ['profile.dateOfBirth: tooOld']);
 });
 
+await test('profession, smoking, children and relocation are coded; preferences take lists of them', () => {
+  const parsed = schema.parse({
+    profile: {
+      fullName: 'A',
+      professionCode: 'doctor',
+      smokingCode: 'never',
+      childrenCode: 'none',
+      relocationCode: 'abroad',
+    },
+    preferences: {
+      professionCodes: ['nurse', 'doctor', 'doctor'],
+      complexionCodes: ['fair'],
+      religiousPracticeCodes: ['practicing'],
+      dietaryPreferenceCodes: ['halal_only'],
+      smokingCodes: ['never'],
+      childrenCodes: ['none'],
+      relocationCodes: ['within_country', 'abroad'],
+    },
+  });
+  assert.equal(parsed.profile.professionCode, 'doctor');
+  // Unique, and in the dictionary's own order.
+  assert.deepEqual(parsed.preferences.professionCodes, ['doctor', 'nurse']);
+  assert.deepEqual(parsed.preferences.relocationCodes, ['within_country', 'abroad']);
+
+  const empty = schema.parse({ profile: { fullName: 'A' } });
+  assert.equal(empty.profile.professionCode, null);
+  assert.deepEqual(empty.preferences.professionCodes, []);
+  assert.deepEqual(empty.preferences.smokingCodes, []);
+
+  assert.deepEqual(
+    problems({
+      profile: { fullName: 'A', professionCode: 'astronaut', smokingCode: 'sometimes' },
+      preferences: { professionCodes: ['astronaut'], childrenCodes: ['many'] },
+    }).sort(),
+    [
+      'preferences.childrenCodes.0: invalidOption',
+      'preferences.professionCodes.0: invalidOption',
+      'profile.professionCode: invalidOption',
+      'profile.smokingCode: invalidOption',
+    ],
+  );
+});
+
 await test('age counts a 29 February birthday correctly', () => {
   assert.equal(ageOn('2000-02-29', new Date(Date.UTC(2026, 1, 28))), 25);
   assert.equal(ageOn('2000-02-29', new Date(Date.UTC(2026, 2, 1))), 26);

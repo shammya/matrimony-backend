@@ -83,7 +83,7 @@ await test('member profiles on real PostgreSQL', async (t) => {
     accountId,
     role: 'member',
   });
-  const [one, two] = await accounts(agency, 2);
+  const [one, two, three] = await accounts(agency, 3);
   const [elsewhere] = await accounts(otherAgency, 1);
   const me = actorFor(agency, one!);
 
@@ -107,6 +107,49 @@ await test('member profiles on real PostgreSQL', async (t) => {
       assert.deepEqual(state.profile?.data.preferences.districtCodes, ['cumilla', 'dhaka']);
       assert.equal(state.profile?.data.preferences.ageMin, 22);
       version = state.profile!.version;
+    },
+  );
+
+  await t.test(
+    'profession, lifestyle and the matching preference lists are saved and read back',
+    async () => {
+      const detailed = actorFor(agency, three!);
+      const state = await service.save(
+        detailed,
+        input(
+          undefined,
+          {
+            professionCode: 'doctor',
+            smokingCode: 'never',
+            childrenCode: 'none',
+            relocationCode: 'abroad',
+          },
+          {
+            preferences: {
+              professionCodes: ['nurse', 'doctor'],
+              complexionCodes: ['fair', 'medium'],
+              religiousPracticeCodes: ['practicing'],
+              dietaryPreferenceCodes: ['halal_only'],
+              smokingCodes: ['never'],
+              childrenCodes: ['none'],
+              relocationCodes: ['within_country', 'abroad'],
+            },
+          },
+        ),
+      );
+      const saved = (await service.get(detailed)).profile!.data;
+      assert.equal(state.profile?.data.profile.professionCode, 'doctor');
+      assert.equal(saved.profile.professionCode, 'doctor');
+      assert.equal(saved.profile.smokingCode, 'never');
+      assert.equal(saved.profile.childrenCode, 'none');
+      assert.equal(saved.profile.relocationCode, 'abroad');
+      assert.deepEqual(saved.preferences.professionCodes, ['doctor', 'nurse']);
+      assert.deepEqual(saved.preferences.complexionCodes, ['fair', 'medium']);
+      assert.deepEqual(saved.preferences.relocationCodes, ['within_country', 'abroad']);
+      assert.deepEqual(saved.preferences.religiousPracticeCodes, ['practicing']);
+      assert.deepEqual(saved.preferences.dietaryPreferenceCodes, ['halal_only']);
+      assert.deepEqual(saved.preferences.smokingCodes, ['never']);
+      assert.deepEqual(saved.preferences.childrenCodes, ['none']);
     },
   );
 

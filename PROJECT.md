@@ -1,6 +1,6 @@
 # Project handoff: read this first
 
-Last updated: 9 October 2026 (staff invitations). If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
+Last updated: 11 October 2026 (the discovery journey confirmed in a browser). If you are a coding agent that has just been opened on this project, read this file completely, then the files listed in [Where to read next](#where-to-read-next). Then tell the user, in about ten lines, what you understood, and wait.
 
 This file lives in the **backend** repo. The **frontend** repo has a shorter `PROJECT.md` that points here.
 
@@ -48,7 +48,7 @@ Needed: Node 24, PostgreSQL 17, Redis **6.2 or newer** (the code uses `GETDEL`; 
 1. `npm ci`
 2. `cp .env.example .env` and fill it in. You must set: the `DATABASE_URL` and `MIGRATION_DATABASE_URL` roles, `SESSION_ENCRYPTION_KEY` (`openssl rand -hex 32`), `AUTH_JWT_PRIVATE_KEY` (`npm run auth:keygen`), `PORT=4000` (so it does not clash with Next.js on 3000), `TENANT_HOSTS`. For development also keep `MAIL_DRIVER=console` and `SMS_DRIVER=console` (emails and text messages are **printed in the backend terminal**). `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are optional: without them the Google button is simply hidden.
 3. Start PostgreSQL and Redis (`docker compose up -d` works, or use local installs).
-4. `npm run db:migrate` (uses `MIGRATION_DATABASE_URL`; migrations are numbered `001`…`009` and are never edited once applied).
+4. `npm run db:migrate` (uses `MIGRATION_DATABASE_URL`; migrations are numbered `001`…`015` and are never edited once applied).
 5. Seed the local agency and runtime role with `scripts/local-seed.sql` (see README, "Local setup").
 6. Create the first administrator: `scripts/provision-account.sql`, then `npm run auth:set-password -- --agency <uuid> --email <email>`. Every other staff member is invited by an admin from the Staff page (the link is printed in the backend terminal as `[dev mail]`).
 7. `npm run dev` (API on 4000). `npm run dev:worker` is only for the MongoDB event copy.
@@ -89,32 +89,52 @@ Status key: **Done** = confirmed by the user in a real browser (or proven by tes
 | Tests and CI                                                                | n/a                                        | Done (CI workflow written, never run on GitHub) |
 | Device sessions for the mobile app                                          | **Planned, deliberately skipped for now**  | n/a                                             |
 
-### Phase 1: Public site (complete)
+### The 20 launch features, matched to `docs/design/launch-features.md`
 
-1.1 Homepage, 1.4 Success stories, 1.5 About and contact: **Done** on both sides. The pricing link on the homepage waits for 1.3 (Phase 4). Real agency content (logo, brand colour, branches, stories) still has to come from the client.
+Checked against each row's "launch completion criterion" on 9 October 2026. **Built** = what we built works and the user confirmed it (or it awaits their try: Review). **Launch criterion met?** is the stricter test from the file: **Partly** means something the file requires is missing. A feature is ticked in the file only when the full criterion has evidence.
 
-### Phase 2: Onboarding and approval (complete)
+| Phase | ID  | Feature                      | Depth | Built  | Launch criterion met? | What is missing against the file                                                          |
+| ----- | --- | ---------------------------- | ----- | ------ | --------------------- | ----------------------------------------------------------------------------------------- |
+| 1     | 1.1 | Homepage                     | Full  | Done   | Partly                | Pricing link (needs 1.3); real MSBD branding and Bengali copy from the client             |
+| 1     | 1.4 | Success stories              | Thin  | Done   | Partly                | Six real approved stories and the couples' consent (sample data now)                      |
+| 1     | 1.5 | About/contact                | Full  | Done   | Partly                | Three real branch addresses and map links (sample data now)                               |
+| 2     | 1.2 | Phone OTP registration       | Full  | Done   | Partly                | Real SMS OTP (console driver now), Turnstile, security review; draft profile is created on first My Profile save |
+| 2     | 2.1 | My Profile and edit requests | Full  | Done   | Yes, on dev defaults  | Final biodata fields and option lists from the client                                     |
+| 2     | 4.2 | Profile approval queue       | Full  | Done   | Yes                   | None found                                                                                |
+| 2     | 4.3 | Agent client management      | Full  | Review | Partly                | Recommendations published through Matching (needs 2.2); client photos; staff invitations untried |
+| 3     | 3.1 | Basic search                 | Full  | -      | No                    | Everything. Now searches inside the client's released set only                            |
+| 3     | 3.2 | Advanced search              | Thin  | -      | No                    | Everything. Works inside the released set; plan gating is decided in Phase 4              |
+| 3     | 3.3 | Profile detail/paywall       | Full  | -      | No                    | Everything. Access follows the agent's release; payment rules come in Phase 4             |
+| 3     | 2.2 | My Matches                   | Full  | -      | No                    | Everything. Becomes the dashboard of the set an agent approves; also unblocks 4.3         |
+| 3     | 2.3 | Interest and mutual match    | Full  | -      | No                    | Everything (connection request to someone in the set)                                     |
+| 3     | 2.4 | Inbox                        | Thin  | -      | No                    | Everything                                                                                |
+| 4     | 5.3 | Feature gating               | Thin  | -      | No                    | Everything. Moved back from Phase 3: payment options are per agency and agent-controlled  |
+| 4     | 1.3 | Pricing page                 | Full  | -      | No                    | Everything; real plans and prices from the client                                         |
+| 4     | 4.4 | Plan management              | Thin  | -      | No                    | Everything                                                                                |
+| 4     | 5.1 | bKash sandbox checkout       | Full  | -      | No                    | Everything; sandbox credentials                                                           |
+| 4     | 5.2 | Manual payment recording     | Full  | -      | No                    | Everything                                                                                |
+| 4     | 2.5 | Payment status               | Full  | -      | No                    | Everything (after 5.1 and 5.2)                                                            |
+| 4     | 4.1 | Admin dashboard              | Thin  | -      | No                    | Everything                                                                                |
 
-| Feature                                                      | Backend                          | Frontend                                      |
-| ------------------------------------------------------------ | -------------------------------- | --------------------------------------------- |
-| 1.2 Registration (email link, Google, phone)                 | Done                             | Done                                          |
-| 2.1 My Profile, edit requests, photos                        | Done                             | Done                                          |
-| 4.2 Approval queue (staff review profile changes and photos) | Done                             | Done                                          |
-| 4.3 Agent client management (assisted service)               | Done (staff invitations: Review) | Done (Staff page and invitation page: Review) |
+**Phase 3 changed on 10 October 2026** after the owner's meeting with the friend: discovery is now **agent-curated**. The system proposes a candidate list per client from their preferences, an agent or admin approves and releases it (a cap such as 50, chosen fields), the client sees and searches only that set, and sends connection requests inside it. The agent's choice wins over the client's preferences. Full description, decisions, slices and acceptance: [docs/features/discovery-loop.md](docs/features/discovery-loop.md). **Slice 3.A (detailed preferences: profession, smoking, children, relocation and seven preference lists) was built on 10 October 2026 and is in Review** (migration 012), and **slice 3.B (candidate generation, backend only, migration 013) was built the same day**: staff press Find candidates, or an approval refreshes a profile's list, and the best 100 published profiles are proposed by two-way fit, and **slice 3.C (staff review and release) was built the same day**: on a published client's page staff see the proposals with why each fits (both directions), release them into the client's window up to the cap (default 50, never exceeded), remove unsuitable ones for good, and choose which fields the client will see (migration 014). It is in Review. **Confirmed in a real browser on 11 October 2026: two real members were assigned to an agent, the agent found and released candidates, one member asked the other, the other accepted, and both showed as connected. Done: 3.A, 3.B, 3.C, 3.D, 3.E (advanced search and the full profile page) and 3.F in full (ask, accept, decline, withdraw, contact sharing, the inbox, and staff answering for a client who has no login).** Basic search was confirmed the same day, so **all of Phase 3 is Done** except what depends on later phases (plan limits on advanced search and profile access, Phase 4) and your friend's confirmation of the connection rules. **Slice 3.D (the client's own page) was built the same day**: a member opens **My matches** and sees only what staff released, with only the fields staff chose (those are the only columns read), photos when allowed, and a simple search inside that set (member code, age, religion, marital status, profession, district, minimum education); a filter on a field the member may not see is refused, so a hidden value cannot be found out by searching. It is in Review. **Slices 3.E and 3.F were built the same day, also in Review**: advanced search (height, income, family status, district of origin; complexion is not a filter) and a full profile page; connection requests (ask, answer, withdraw, two people asking each other become one accepted connection, declined is final) with an inbox, contact sharing after acceptance on each side's own say, and staff answering for clients who have no login. Migration 015 uses the original `interests` and `notifications` tables. The rules chosen without discussion are listed at the end of [docs/features/discovery-loop.md](docs/features/discovery-loop.md) for the friend to confirm. Gating and payments are still Phase 4, so nothing here is plan-limited yet; chat is undecided and not built. The rest of the plan is a proposal until the friend confirms it, and `launch-features.md` has not been edited. 5.3 went back to Phase 4 because payment options are per agency and agent-controlled.
 
-Staff are invited by email from the admin's Staff page (built 9 October 2026, **Review**: not yet tried in a real browser). Not built in Phase 2: client photos, disabling or removing staff, changing a staff member's role.
-
-### Phase 3: Discovery loop (not started)
-
-3.1 Basic search, 3.2 Advanced search, 3.3 Profile detail and paywall, 2.2 My Matches, 2.3 Interest and mutual match, 2.4 Inbox.
-
-### Phase 4: Money (not started)
-
-1.3 Pricing page, 4.4 Plan management, 5.3 Feature gating and quotas, 5.1 bKash sandbox checkout, 5.2 Manual payment recording, 2.5 Payment status, 4.1 Admin dashboard counts.
+Not built in Phase 2: client photos, disabling or removing staff, changing a staff member's role. Staff invitations (9 October) are in **Review**.
 
 ### Phase 5: Hardening and launch (not started)
 
-Tenant isolation proof, tests on the real stack (including MongoDB), **security review by an experienced person**, operations (backups, alerts, supervision), production deployment.
+These are the file's "Required cross-cutting acceptance" items, plus launch work:
+
+- A second synthetic tenant proves isolation across API reads and writes, sessions, relationships, cache keys and private media.
+- Unapproved content, internal notes and protected contacts never appear in unauthorized responses; duplicate payments, stale approvals and concurrent last-quota requests stay correct.
+- Provider and worker failures show truthful pending or error states and recover without duplicate charges.
+- Bengali copy, dates, amounts and mobile layouts checked throughout; UTF-8 free text preserved.
+- Logging, alerts and a **tested backup restore**; tests on the real stack (including MongoDB if it is kept).
+- **Security review by an experienced person**, then production deployment.
+- The end-to-end acceptance journey from the file (CEO registers with a real OTP, is approved, searches, expresses interest, hits a gate, pays by bKash sandbox; an agent records partial and final manual receipts; admin cards are correct) passes on staging with synthetic accounts.
+
+### Phase 6: Agency configuration (decision needed, not started)
+
+The owner wants each agency's admin to configure fields, visible data and payment options. It is **skipped for now**. Before any work: the friend must say whether "tenant-facing UI" in the launch file excludes an agency-admin settings screen, and whether launch can start with the platform owner configuring each agency. Phase 3 uses fixed field lists kept in one place so they can later become per-agency definitions.
 
 ### Where the live tracker is
 
@@ -152,6 +172,8 @@ Not built in authentication: a real SMS gateway and a real email service, the pr
 - **How the mobile app finds its agency:** one branded app per agency, or one shared app where the person picks.
 - **Sign-in defaults chosen without the client:** 8-hour sessions, 10-character passwords, 5 wrong passwords pause an email for 15 minutes, 3 emails an hour per address, 10 devices per account, phone code limits.
 - **Biodata fields and option lists** (religion, education, income bands…): My Profile runs on development defaults listed on its tracker card.
+- **Discovery model (10 October 2026):** the agent-curated flow in [docs/features/discovery-loop.md](docs/features/discovery-loop.md) needs the friend's confirmation, plus the full preference field list and the cap rules listed there.
+- **Agency-admin configuration (Phase 6):** is a settings screen for an agency's admin allowed at launch, or does the platform owner configure each agency? Self-registered members without an agent are deferred.
 - **Plans, prices, durations, quotas**, **bKash sandbox credentials**, **real agency content**, **the final terms and privacy texts** (placeholders now, versioned in `src/bo/registration.ts`).
 - **Is MongoDB needed for launch?** Nothing reads the events yet; the PostgreSQL outbox already keeps them.
 - **Digit style** in Bengali pages (Latin digits for now; one switch in the frontend).

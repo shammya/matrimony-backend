@@ -60,6 +60,10 @@ export const PROFILE_COLUMNS: readonly ColumnSpec[] = [
   text('familyStatusCode', 'family_status_code'),
   text('religiousPracticeCode', 'religious_practice_code'),
   text('dietaryPreferenceCode', 'dietary_preference_code'),
+  text('professionCode', 'profession_code'),
+  text('smokingCode', 'smoking_code'),
+  text('childrenCode', 'children_code'),
+  text('relocationCode', 'relocation_code'),
   text('hobbies', 'hobbies'),
   text('aboutMe', 'about_me'),
 ];
@@ -86,6 +90,13 @@ export const PREFERENCE_COLUMNS: readonly ColumnSpec[] = [
   text('incomeMinBandCode', 'income_min_band_code'),
   text('incomeMaxBandCode', 'income_max_band_code'),
   text('familyStatusMinCode', 'family_status_min_code'),
+  list('professionCodes', 'profession_codes'),
+  list('complexionCodes', 'complexion_codes'),
+  list('religiousPracticeCodes', 'religious_practice_codes'),
+  list('dietaryPreferenceCodes', 'dietary_preference_codes'),
+  list('smokingCodes', 'smoking_codes'),
+  list('childrenCodes', 'children_codes'),
+  list('relocationCodes', 'relocation_codes'),
 ];
 
 /** The value to store for a field the client left out: an empty list or nothing. */
